@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Xarvis AI — Creator Dashboard</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+  <!-- ═══════════ SIDEBAR ═══════════ -->
+  <aside class="sidebar" id="sidebar">
+
+    <div class="sidebar-header">
+      <a href="index.html" class="logo">Xarvis AI</a>
+      <span class="plan-pill" id="plan-label">🟢 Starter</span>
+    </div>
+
+    <div class="sidebar-top">
+      <button class="new-chat-btn" onclick="newChat()">+ New Chat</button>
+      <button class="tts-btn active" id="tts-btn" onclick="toggleTTS()">🔊 TTS</button>
+    </div>
+
+    <div class="limit-banner hidden" id="limit-banner">
+      ⚠️ <span id="msg-count">0</span>/10 messages used.
+      <strong style="cursor:pointer;text-decoration:underline;" onclick="openUpgradeModal()">Upgrade →</strong>
+    </div>
+
+    <div class="sidebar-label">Quick Actions</div>
+    <div class="quick-actions">
+      <button class="quick-btn" onclick="usePrompt('Generate a YouTube hook for my channel')">🎬 Generate YouTube Hook</button>
+      <button class="quick-btn" onclick="usePrompt('Create a 7-day content calendar for my niche')">📅 Content Calendar</button>
+      <button class="quick-btn" onclick="usePrompt('Write a viral TikTok script for me')">⚡ TikTok Script</button>
+      <button class="quick-btn" onclick="usePrompt('Give me a monetization plan for my audience size')">💰 Monetization Plan</button>
+      <button class="quick-btn" onclick="usePrompt('Build me a 90-day growth strategy')">🚀 Growth Strategy</button>
+      <button class="quick-btn" onclick="usePrompt('What are the top trending topics in my niche right now?')">🔥 Trending Topics</button>
+    </div>
+
+    <div class="sidebar-label" style="margin-top:8px;">Recent Chats</div>
+    <div class="recent-chats" id="recent-chats"></div>
+
+    <div class="sidebar-upgrade" id="sidebar-upgrade">
+      <h4>⚡ Go Creator Pro</h4>
+      <p>Unlock unlimited chat, memory, and full monetization tools.</p>
+      <a href="#" class="upgrade-link" onclick="openUpgradeModal();return false;">Upgrade — $12/mo</a>
+    </div>
+
+  </aside>
+
+  <!-- ═══════════ MAIN ═══════════ -->
+  <div class="main">
+
+    <div class="topbar">
+      <div class="topbar-left">
+        <button class="mobile-menu-btn" onclick="toggleSidebar()">☰</button>
+        <div class="status-dot"></div>
+        <span>Xarvis AI</span>
+        <span style="color:var(--muted);font-size:.76rem;font-weight:400;">● Online</span>
+      </div>
+      <div class="topbar-right">
+        <button class="top-btn active" id="tts-btn-top" onclick="toggleTTS()">🔊 TTS</button>
+        <button class="top-btn" onclick="openUpgradeModal()">⚡ Upgrade</button>
+      </div>
+    </div>
+
+    <div class="chat-area" id="chat-area">
+      <div class="empty-state" id="empty-state">
+        <div>
+          <h2>Your AI Co-Founder is Ready.</h2>
+          <p>Tell Xarvis your niche, your goals, and where you're at — and get a real strategy in seconds.</p>
+        </div>
+        <div class="suggestion-grid">
+          <div class="suggestion-card" data-prompt="I'm a fitness creator on TikTok with 12k followers. Build me a 100k in 90 days plan.">
+            <div class="sug-icon">💪</div>
+            <div class="sug-title">Fitness Growth Plan</div>
+            <div class="sug-desc">100k followers in 90 days blueprint</div>
+          </div>
+          <div class="suggestion-card" data-prompt="Write 5 viral hooks for a cooking channel on YouTube Shorts">
+            <div class="sug-icon">🍳</div>
+            <div class="sug-title">Viral Cooking Hooks</div>
+            <div class="sug-desc">5 proven hooks for your cooking channel</div>
+          </div>
+          <div class="suggestion-card" data-prompt="I have 50k subscribers. Build me a monetization strategy to turn them into real income.">
+            <div class="sug-icon">💰</div>
+            <div class="sug-title">Monetization Strategy</div>
+            <div class="sug-desc">Turn 50k subs into real income</div>
+          </div>
+          <div class="suggestion-card" data-prompt="Create a 7-day viral TikTok content calendar for a lifestyle creator">
+            <div class="sug-icon">📅</div>
+            <div class="sug-title">TikTok Content Calendar</div>
+            <div class="sug-desc">7-day viral posting schedule</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="input-area">
+      <div class="input-wrap">
+        <textarea
+          id="chat-input"
+          rows="1"
+          placeholder="Ask Xarvis anything... your niche, goals, content ideas..."
+          onkeydown="handleKey(event)"
+          oninput="autoResize(this)"
+        ></textarea>
+        <div class="input-btns">
+          <button class="mic-btn" id="mic-btn" onclick="toggleVoice()" title="Voice input">🎤</button>
+          <button class="send-btn" id="send-btn" onclick="sendMessage()">➤</button>
+        </div>
+      </div>
+      <div class="input-hint">Xarvis knows your history · Press Enter to send · Shift+Enter for new line</div>
+    </div>
+
+  </div><!-- /main -->
+
+  <!-- ═══════════ VOICE MODAL ═══════════ -->
+  <div class="voice-modal" id="voice-modal">
+    <h4>🎤 Listening...</h4>
+    <p>Speak your message</p>
+    <button class="voice-stop-btn" onclick="stopVoice()">Stop & Send</button>
+  </div>
+
+  <!-- ═══════════ UPGRADE MODAL ═══════════ -->
+  <div class="modal-overlay" id="upgrade-modal" onclick="closeModalOutside(event)">
+    <div class="modal">
+      <h3>🚀 Upgrade Xarvis AI</h3>
+      <p>Unlock unlimited chat, memory, full scripts, and monetization tools.</p>
+      <div class="plan-options">
+        <div class="plan-option" data-plan="pro" onclick="selectPlan('pro')">
+          <div>
+            <h4>🔵 Creator Pro</h4>
+            <p>Unlimited chat + memory + full Creator AI</p>
+          </div>
+          <div class="plan-price-tag">$12/mo</div>
+        </div>
+        <div class="plan-option" data-plan="elite" onclick="selectPlan('elite')">
+          <div>
+            <h4>🟣 Creator Elite</h4>
+            <p>Everything + monetization + done-for-you systems</p>
+          </div>
+          <div class="plan-price-tag">$39/mo</div>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="modal-activate" onclick="activatePlanBtn()">✦ Activate Plan</button>
+        <button class="modal-dismiss" onclick="closeUpgradeModal()">Maybe later</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════ SCRIPTS ═══════════ -->
+  <script src="js/config.js"></script>
+  <script src="js/gemini.js"></script>
+  <script src="js/app.js"></script>
+
+</body>
+</html>
