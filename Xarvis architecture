@@ -1,0 +1,995 @@
+# XARVIS AI — PRODUCTION ARCHITECTURE
+### Full System Design · v1.0 · Confidential
+
+---
+
+## QUICK LEGEND
+```
+[AUTO]  = Generated/templated — code provided or can be scaffolded
+[MANUAL] = You must write/configure this yourself (listed at bottom)
+[LATER] = Build this when you scale, not on day one
+```
+
+---
+
+## COMPLETE FOLDER STRUCTURE
+
+```
+xarvis-ai/                              ← Root monorepo
+│
+├── .github/                            [MANUAL]
+│   ├── workflows/
+│   │   ├── ci.yml                      ← Runs tests on every push
+│   │   ├── deploy-frontend.yml         ← Auto-deploys to GitHub Pages
+│   │   └── deploy-backend.yml          ← Auto-deploys to Render
+│   ├── CODEOWNERS                      ← Who owns what
+│   └── pull_request_template.md
+│
+├── frontend/                           ← Everything the user sees
+│   ├── public/
+│   │   ├── assets/
+│   │   │   ├── fonts/                  ← Self-hosted fonts (performance)
+│   │   │   ├── images/
+│   │   │   │   ├── og/                 ← Open Graph images for sharing
+│   │   │   │   └── creators/           ← Creator profile assets
+│   │   │   └── icons/
+│   │   ├── favicon.ico
+│   │   └── robots.txt
+│   │
+│   ├── pages/
+│   │   ├── index.html                  ← Landing page [KEEP, upgrade]
+│   │   ├── app.html                    ← Main dashboard [KEEP, upgraded]
+│   │   ├── auth.html                   ← Login / signup [BUILD]
+│   │   ├── onboarding.html             ← First-time setup wizard [BUILD]
+│   │   └── 404.html
+│   │
+│   ├── components/                     ← Reusable HTML/JS modules
+│   │   ├── ui/
+│   │   │   ├── Button.js
+│   │   │   ├── Card.js
+│   │   │   ├── Modal.js
+│   │   │   ├── Toast.js
+│   │   │   └── Loader.js
+│   │   ├── chat/
+│   │   │   ├── ChatWindow.js
+│   │   │   ├── MessageBubble.js
+│   │   │   ├── InputBar.js
+│   │   │   └── ThinkingAnimation.js
+│   │   ├── tools/
+│   │   │   ├── ViralStudio.js
+│   │   │   ├── ContentCalendar.js
+│   │   │   ├── FeedbackAnalyzer.js
+│   │   │   └── AgentMode.js
+│   │   └── layouts/
+│   │       ├── Sidebar.js
+│   │       ├── Topbar.js
+│   │       └── AppShell.js
+│   │
+│   ├── styles/
+│   │   ├── tokens.css                  ← Design system (colors, spacing, type)
+│   │   ├── base.css                    ← CSS reset + global
+│   │   ├── components.css              ← All component styles
+│   │   ├── animations.css              ← Animation library
+│   │   └── themes/
+│   │       ├── dark.css                ← Default dark theme
+│   │       └── light.css              [LATER]
+│   │
+│   ├── js/
+│   │   ├── core/
+│   │   │   ├── api.js                  ← All API calls — one source of truth
+│   │   │   ├── auth.js                 ← Token handling, session
+│   │   │   ├── router.js               ← Client-side view routing
+│   │   │   ├── state.js                ← Global state manager
+│   │   │   └── events.js               ← App-wide event bus
+│   │   ├── features/
+│   │   │   ├── chat.feature.js
+│   │   │   ├── viral.feature.js
+│   │   │   ├── calendar.feature.js
+│   │   │   ├── feedback.feature.js
+│   │   │   ├── agent.feature.js
+│   │   │   └── memory.feature.js
+│   │   ├── animations/
+│   │   │   ├── neural.js               ← Neural network canvas
+│   │   │   ├── particles.js            ← Particle system
+│   │   │   ├── tilt.js                 ← 3D card tilt
+│   │   │   └── typewriter.js           ← AI output typewriter
+│   │   └── utils/
+│   │       ├── dom.js
+│   │       ├── format.js
+│   │       └── storage.js
+│   │
+│   └── config/
+│       └── frontend.config.js          ← API URLs, feature flags
+│
+├── backend/                            ← Node.js/Express API server
+│   ├── src/
+│   │   ├── server.js                   ← Entry point [REPLACE current]
+│   │   ├── app.js                      ← Express setup, middleware chain
+│   │   │
+│   │   ├── routes/                     ← URL → controller mapping
+│   │   │   ├── index.js                ← Aggregates all routes
+│   │   │   ├── chat.routes.js          ← POST /api/chat
+│   │   │   ├── generate.routes.js      ← POST /api/generate
+│   │   │   ├── agent.routes.js         ← POST /api/agent/*
+│   │   │   ├── auth.routes.js          ← POST /api/auth/*
+│   │   │   ├── memory.routes.js        ← GET/POST /api/memory/*
+│   │   │   ├── analytics.routes.js     ← GET /api/analytics/*
+│   │   │   └── health.routes.js        ← GET /health (Render ping)
+│   │   │
+│   │   ├── controllers/                ← Request handling logic
+│   │   │   ├── chat.controller.js      [REFACTOR from Chat.js]
+│   │   │   ├── generate.controller.js  [REFACTOR from Generate.js]
+│   │   │   ├── agent.controller.js     [REFACTOR from Agent.js]
+│   │   │   ├── auth.controller.js      [BUILD]
+│   │   │   ├── memory.controller.js    [BUILD]
+│   │   │   └── analytics.controller.js [BUILD]
+│   │   │
+│   │   ├── services/                   ← Business logic layer
+│   │   │   ├── ai/
+│   │   │   │   ├── groq.service.js     ← Groq API wrapper
+│   │   │   │   ├── anthropic.service.js← Claude API wrapper
+│   │   │   │   ├── openai.service.js   ← OpenAI wrapper [LATER]
+│   │   │   │   └── router.service.js   ← Smart model router/fallback
+│   │   │   ├── memory/
+│   │   │   │   ├── redis.service.js    ← Hot cache / sessions [LATER]
+│   │   │   │   ├── vector.service.js   ← Pinecone/Weaviate [LATER]
+│   │   │   │   └── local.service.js    ← In-memory fallback [NOW]
+│   │   │   ├── auth/
+│   │   │   │   ├── jwt.service.js      [BUILD]
+│   │   │   │   └── oauth.service.js    [LATER]
+│   │   │   ├── analytics/
+│   │   │   │   └── tracker.service.js  [BUILD]
+│   │   │   └── media/
+│   │   │       ├── image.service.js    [LATER]
+│   │   │       └── video.service.js    [LATER]
+│   │   │
+│   │   ├── agents/                     ← AI Agent definitions
+│   │   │   ├── base.agent.js           ← Abstract base class all agents extend
+│   │   │   ├── xarvis.agent.js         ← Core Xarvis personality agent
+│   │   │   ├── viral.agent.js          ← Viral content specialist
+│   │   │   ├── strategy.agent.js       ← Business strategy agent
+│   │   │   ├── feedback.agent.js       ← Content critique agent
+│   │   │   ├── calendar.agent.js       ← Content planning agent
+│   │   │   ├── research.agent.js       ← Trend research agent [LATER]
+│   │   │   └── orchestrator.js         ← Multi-agent coordinator
+│   │   │
+│   │   ├── prompts/                    ← ALL prompts live here, never inline
+│   │   │   ├── system/
+│   │   │   │   ├── xarvis.system.js    ← Core Xarvis identity prompt
+│   │   │   │   ├── viral.system.js
+│   │   │   │   ├── strategy.system.js
+│   │   │   │   ├── feedback.system.js
+│   │   │   │   └── calendar.system.js
+│   │   │   ├── templates/
+│   │   │   │   ├── hook.template.js    ← Hook generation template
+│   │   │   │   ├── script.template.js  ← Script template
+│   │   │   │   ├── calendar.template.js
+│   │   │   │   └── feedback.template.js
+│   │   │   └── builder.js              ← Prompt assembly engine
+│   │   │
+│   │   ├── middleware/                 ← Express middleware
+│   │   │   ├── auth.middleware.js      ← JWT verification
+│   │   │   ├── rateLimit.middleware.js ← Per-route rate limiting
+│   │   │   ├── cors.middleware.js      ← CORS config
+│   │   │   ├── logger.middleware.js    ← Request logging
+│   │   │   ├── validate.middleware.js  ← Input validation
+│   │   │   └── error.middleware.js     ← Global error handler
+│   │   │
+│   │   ├── database/                   [LATER — start with in-memory]
+│   │   │   ├── index.js                ← DB connection pool
+│   │   │   ├── models/
+│   │   │   │   ├── User.model.js
+│   │   │   │   ├── Session.model.js
+│   │   │   │   ├── Memory.model.js
+│   │   │   │   └── Analytics.model.js
+│   │   │   ├── migrations/
+│   │   │   └── seeds/
+│   │   │
+│   │   ├── utils/
+│   │   │   ├── logger.js               ← Winston/Pino logger
+│   │   │   ├── errors.js               ← Custom error classes
+│   │   │   ├── validator.js            ← Joi/Zod input schemas
+│   │   │   ├── crypto.js               ← Hashing, encryption utils
+│   │   │   └── helpers.js
+│   │   │
+│   │   └── config/
+│   │       ├── index.js                ← Exports all config
+│   │       ├── ai.config.js            ← Model selection, temperatures
+│   │       ├── db.config.js            ← DB connection strings
+│   │       ├── security.config.js      ← CORS origins, rate limits
+│   │       └── features.config.js      ← Feature flags
+│   │
+│   ├── tests/
+│   │   ├── unit/
+│   │   │   ├── agents/
+│   │   │   ├── services/
+│   │   │   └── utils/
+│   │   ├── integration/
+│   │   │   └── routes/
+│   │   └── e2e/
+│   │
+│   ├── package.json
+│   ├── .env.example                    ← NEVER commit .env
+│   └── nodemon.json                    ← Dev server config
+│
+├── infrastructure/
+│   ├── render/
+│   │   ├── render.yaml                 ← Primary deployment config
+│   │   └── render-backup.yaml          ← Backup account deployment
+│   ├── docker/                         [LATER]
+│   │   ├── Dockerfile.backend
+│   │   └── docker-compose.yml
+│   └── nginx/                          [LATER]
+│       └── nginx.conf
+│
+├── docs/
+│   ├── architecture.md                 ← This file (trimmed)
+│   ├── api-reference.md                ← Every endpoint documented
+│   ├── deployment.md                   ← How to deploy step by step
+│   ├── agents.md                       ← How agents work
+│   └── prompts.md                      ← Prompt engineering guide
+│
+├── scripts/
+│   ├── setup.sh                        ← One-command dev setup
+│   ├── deploy.sh                       ← Manual deploy trigger
+│   └── seed.js                         ← Seed test data
+│
+├── .gitignore
+├── .env.example                        ← Root-level env reference
+├── README.md
+└── package.json                        ← Root (workspaces optional)
+```
+
+---
+
+## WHAT TO DO WITH CURRENT FILES
+
+| Current File | Action | Reason |
+|---|---|---|
+| `server.js` | → `backend/src/server.js` | Refactor into entry point only |
+| `app.js` | → `backend/src/app.js` | Express setup only, remove route logic |
+| `Chat.js` | → Split into `chat.controller.js` + `xarvis.agent.js` | Controllers ≠ agents |
+| `Generate.js` | → Split into `generate.controller.js` + `viral.agent.js` | Same reason |
+| `Agent.js` | → `agents/orchestrator.js` + individual agents | One file per agent |
+| `config.js` | → `backend/src/config/index.js` | Structured config system |
+| `app.html` | → `frontend/pages/app.html` | Move, already upgraded |
+| `index.html` | → `frontend/pages/index.html` | Move, keep as landing |
+| `package.json` | → `backend/package.json` | Backend-specific deps only |
+| `.env` | DELETE from git + add to `.gitignore` | Security critical |
+
+---
+
+## BACKEND CORE FILES — KEY CODE
+
+### `backend/src/server.js` — Entry Point
+```javascript
+// Pure entry point. Nothing else lives here.
+import app from './app.js';
+import { logger } from './utils/logger.js';
+import { config } from './config/index.js';
+
+const PORT = config.PORT || 3001;
+
+app.listen(PORT, () => {
+  logger.info(`Xarvis AI Backend running on port ${PORT}`);
+  logger.info(`Environment: ${config.NODE_ENV}`);
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  logger.info('SIGTERM received — shutting down gracefully');
+  process.exit(0);
+});
+```
+
+### `backend/src/app.js` — Express Setup
+```javascript
+import express from 'express';
+import { corsMiddleware } from './middleware/cors.middleware.js';
+import { rateLimitMiddleware } from './middleware/rateLimit.middleware.js';
+import { loggerMiddleware } from './middleware/logger.middleware.js';
+import { errorMiddleware } from './middleware/error.middleware.js';
+import routes from './routes/index.js';
+
+const app = express();
+
+// Middleware chain — ORDER MATTERS
+app.use(corsMiddleware);
+app.use(express.json({ limit: '10mb' }));
+app.use(loggerMiddleware);
+app.use(rateLimitMiddleware);
+
+// Routes
+app.use('/api', routes);
+
+// Error handler — always last
+app.use(errorMiddleware);
+
+export default app;
+```
+
+### `backend/src/routes/index.js` — Route Aggregator
+```javascript
+import { Router } from 'express';
+import chatRoutes from './chat.routes.js';
+import generateRoutes from './generate.routes.js';
+import agentRoutes from './agent.routes.js';
+import authRoutes from './auth.routes.js';
+import healthRoutes from './health.routes.js';
+
+const router = Router();
+
+router.use('/chat', chatRoutes);
+router.use('/generate', generateRoutes);
+router.use('/agent', agentRoutes);
+router.use('/auth', authRoutes);
+router.use('/health', healthRoutes);
+
+export default router;
+```
+
+### `backend/src/agents/base.agent.js` — Base Agent
+```javascript
+// Every agent extends this. Pattern: Strategy + Template Method.
+export class BaseAgent {
+  constructor(name, model = 'llama3-70b-8192') {
+    this.name = name;
+    this.model = model;
+    this.temperature = 0.7;
+    this.maxTokens = 2048;
+  }
+
+  // Override in subclasses
+  getSystemPrompt(context = {}) {
+    throw new Error(`${this.name}: getSystemPrompt() must be implemented`);
+  }
+
+  buildMessages(userMessage, history = []) {
+    return [
+      { role: 'system', content: this.getSystemPrompt() },
+      ...history.slice(-10),
+      { role: 'user', content: userMessage }
+    ];
+  }
+
+  async run(userMessage, context = {}, history = []) {
+    const messages = this.buildMessages(userMessage, history);
+    return await this.callModel(messages, context);
+  }
+
+  async callModel(messages, context) {
+    // Implemented by AIRouterService — agents don't know which model runs them
+    const { aiRouter } = await import('../services/ai/router.service.js');
+    return await aiRouter.complete(messages, {
+      model: this.model,
+      temperature: this.temperature,
+      maxTokens: this.maxTokens,
+      ...context
+    });
+  }
+}
+```
+
+### `backend/src/agents/viral.agent.js` — Viral Content Specialist
+```javascript
+import { BaseAgent } from './base.agent.js';
+import { viralSystemPrompt } from '../prompts/system/viral.system.js';
+
+export class ViralAgent extends BaseAgent {
+  constructor() {
+    super('ViralAgent', 'llama3-70b-8192');
+    this.temperature = 0.85; // Creative agent, higher temp
+  }
+
+  getSystemPrompt(context = {}) {
+    return viralSystemPrompt(context);
+  }
+}
+
+export const viralAgent = new ViralAgent();
+```
+
+### `backend/src/services/ai/router.service.js` — AI Model Router
+```javascript
+// This is your competitive moat. Routes to best model, handles fallbacks.
+import Groq from 'groq-sdk';
+import Anthropic from '@anthropic-ai/sdk';
+import { config } from '../../config/index.js';
+import { logger } from '../../utils/logger.js';
+
+class AIRouterService {
+  constructor() {
+    this.groq = new Groq({ apiKey: config.GROQ_API_KEY });
+    this.anthropic = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY });
+    this.defaultModel = 'groq'; // Fast + free tier
+  }
+
+  async complete(messages, options = {}) {
+    const provider = options.provider || this.defaultModel;
+
+    try {
+      if (provider === 'groq') return await this._groqComplete(messages, options);
+      if (provider === 'anthropic') return await this._anthropicComplete(messages, options);
+      throw new Error('Unknown provider');
+    } catch (err) {
+      logger.warn(`Primary AI (${provider}) failed: ${err.message}. Falling back.`);
+      return await this._fallback(messages, options);
+    }
+  }
+
+  async _groqComplete(messages, options) {
+    const res = await this.groq.chat.completions.create({
+      model: options.model || 'llama3-70b-8192',
+      messages,
+      temperature: options.temperature || 0.7,
+      max_tokens: options.maxTokens || 2048,
+    });
+    return res.choices[0].message.content;
+  }
+
+  async _anthropicComplete(messages, options) {
+    const system = messages.find(m => m.role === 'system')?.content || '';
+    const userMessages = messages.filter(m => m.role !== 'system');
+    const res = await this.anthropic.messages.create({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: options.maxTokens || 2048,
+      system,
+      messages: userMessages,
+    });
+    return res.content[0].text;
+  }
+
+  async _fallback(messages, options) {
+    // Try Anthropic if Groq fails, and vice versa
+    try {
+      const fallbackProvider = options.provider === 'groq' ? 'anthropic' : 'groq';
+      return await this.complete(messages, { ...options, provider: fallbackProvider });
+    } catch (err) {
+      logger.error('All AI providers failed:', err.message);
+      throw new Error('AI service temporarily unavailable. Please try again.');
+    }
+  }
+}
+
+export const aiRouter = new AIRouterService();
+```
+
+### `backend/src/prompts/system/xarvis.system.js` — Core Identity
+```javascript
+// All prompts are functions that accept context. Never hardcoded strings.
+export const xarvisSystemPrompt = (context = {}) => `
+You are Xarvis, an elite AI co-founder and content strategist for creators.
+You have the strategic mind of a venture capitalist, the creativity of a top content director,
+and the tactical precision of a growth hacker.
+
+${context.niche ? `Creator niche: ${context.niche}` : ''}
+${context.platform ? `Primary platform: ${context.platform}` : ''}
+${context.goal ? `Current goal: ${context.goal}` : ''}
+${context.tone ? `Content tone: ${context.tone}` : ''}
+
+RULES:
+- Be direct, tactical, and specific. No fluff.
+- Every response must have an actionable next step.
+- Think in systems, not one-off advice.
+- Prioritize speed-to-result over perfection.
+`.trim();
+```
+
+### `backend/src/middleware/error.middleware.js`
+```javascript
+import { logger } from '../utils/logger.js';
+
+export const errorMiddleware = (err, req, res, next) => {
+  const status = err.status || err.statusCode || 500;
+  const message = err.message || 'Internal server error';
+
+  logger.error({
+    error: message,
+    stack: err.stack,
+    route: req.path,
+    method: req.method,
+  });
+
+  res.status(status).json({
+    error: message,
+    ...(process.env.NODE_ENV === 'development' && { stack: err.stack }),
+  });
+};
+```
+
+### `backend/src/config/index.js`
+```javascript
+import 'dotenv/config';
+
+export const config = {
+  NODE_ENV:           process.env.NODE_ENV || 'development',
+  PORT:               process.env.PORT || 3001,
+
+  // AI APIs
+  GROQ_API_KEY:       process.env.GROQ_API_KEY,
+  ANTHROPIC_API_KEY:  process.env.ANTHROPIC_API_KEY,
+  OPENAI_API_KEY:     process.env.OPENAI_API_KEY, // future
+
+  // Security
+  JWT_SECRET:         process.env.JWT_SECRET,
+  CORS_ORIGINS:       (process.env.CORS_ORIGINS || '').split(','),
+
+  // Database (optional now, required later)
+  POSTGRES_URL:       process.env.POSTGRES_URL,
+  REDIS_URL:          process.env.REDIS_URL,
+
+  // Vector DB
+  PINECONE_API_KEY:   process.env.PINECONE_API_KEY,
+  PINECONE_INDEX:     process.env.PINECONE_INDEX,
+
+  // Feature flags
+  FEATURES: {
+    AUTH_ENABLED:     process.env.AUTH_ENABLED === 'true',
+    MEMORY_ENABLED:   process.env.MEMORY_ENABLED === 'true',
+    ANALYTICS:        process.env.ANALYTICS_ENABLED === 'true',
+  }
+};
+
+// Validate critical keys at startup
+const required = ['GROQ_API_KEY'];
+required.forEach(key => {
+  if (!config[key]) throw new Error(`Missing required env var: ${key}`);
+});
+```
+
+---
+
+## ENVIRONMENT VARIABLES
+
+### `.env.example` — Copy this, rename to `.env`, fill values
+
+```bash
+# ─── RUNTIME ───────────────────────────────────
+NODE_ENV=development
+PORT=3001
+
+# ─── AI PROVIDERS ──────────────────────────────
+# Primary: Groq (fast, free tier generous)
+GROQ_API_KEY=gsk_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+# Secondary: Anthropic Claude (highest quality)
+ANTHROPIC_API_KEY=sk-ant-api03-xxxxxxxxxxxxxxxx
+
+# Future
+OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+# ─── SECURITY ──────────────────────────────────
+JWT_SECRET=xarvis-super-secret-change-this-in-prod-min-32-chars
+
+# ─── CORS ──────────────────────────────────────
+# Comma-separated list of allowed origins
+CORS_ORIGINS=https://od2k24.github.io,http://localhost:3000
+
+# ─── DATABASE (Phase 2) ────────────────────────
+POSTGRES_URL=
+REDIS_URL=
+
+# ─── VECTOR DB (Phase 2) ───────────────────────
+PINECONE_API_KEY=
+PINECONE_INDEX=xarvis-memory
+
+# ─── FEATURE FLAGS ─────────────────────────────
+AUTH_ENABLED=false
+MEMORY_ENABLED=false
+ANALYTICS_ENABLED=false
+
+# ─── MONITORING (Phase 3) ──────────────────────
+SENTRY_DSN=
+DATADOG_API_KEY=
+```
+
+---
+
+## RENDER DEPLOYMENT CONFIG
+
+### `infrastructure/render/render.yaml`
+```yaml
+services:
+  - type: web
+    name: xarvis-ai-backend
+    env: node
+    region: oregon          # or frankfurt for EU
+    plan: free              # upgrade to starter ($7/mo) when you scale
+    branch: main
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: node src/server.js
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: GROQ_API_KEY
+        sync: false         # You enter this in Render dashboard
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true # Render auto-generates this
+      - key: CORS_ORIGINS
+        value: https://od2k24.github.io
+```
+
+### `infrastructure/render/render-backup.yaml` (Second account)
+```yaml
+# Identical to above, different service name
+services:
+  - type: web
+    name: xarvis-ai-backup
+    env: node
+    region: frankfurt       # Different region for real redundancy
+    plan: free
+    branch: main
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: node src/server.js
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: GROQ_API_KEY
+        sync: false
+      - key: CORS_ORIGINS
+        value: https://YOUR-BACKUP-GITHUB.github.io
+```
+
+---
+
+## GITHUB BRANCH STRATEGY
+
+```
+main            ← Production. Protected. Only merges from develop.
+  └── develop   ← Integration branch. Features merge here first.
+        ├── feat/agent-memory      ← Feature branches
+        ├── feat/auth-system
+        ├── feat/vector-db
+        ├── fix/chat-fallback
+        └── chore/update-deps
+```
+
+**Rules:**
+- Never push directly to `main`
+- `develop` deploys to a staging Render service
+- `main` deploys to production Render service
+- Feature branches named: `feat/`, `fix/`, `chore/`, `docs/`
+
+### `.github/workflows/deploy-backend.yml`
+```yaml
+name: Deploy Backend
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Render Deploy
+        run: |
+          curl -X POST ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+```
+
+### `.github/workflows/deploy-frontend.yml`
+```yaml
+name: Deploy Frontend
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'frontend/**'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy to GitHub Pages
+        uses: JamesIves/github-pages-deploy-action@v4
+        with:
+          folder: frontend/pages
+          branch: gh-pages
+```
+
+---
+
+## `backend/package.json`
+```json
+{
+  "name": "xarvis-ai-backend",
+  "version": "1.0.0",
+  "type": "module",
+  "engines": { "node": ">=18.0.0" },
+  "scripts": {
+    "start":   "node src/server.js",
+    "dev":     "nodemon src/server.js",
+    "test":    "jest",
+    "lint":    "eslint src/"
+  },
+  "dependencies": {
+    "express":            "^4.18.2",
+    "groq-sdk":           "^0.3.0",
+    "@anthropic-ai/sdk":  "^0.27.0",
+    "cors":               "^2.8.5",
+    "dotenv":             "^16.4.0",
+    "express-rate-limit": "^7.2.0",
+    "winston":            "^3.11.0",
+    "zod":                "^3.22.0",
+    "jsonwebtoken":       "^9.0.2",
+    "helmet":             "^7.1.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0",
+    "jest":    "^29.7.0",
+    "eslint":  "^8.57.0"
+  }
+}
+```
+
+---
+
+## `frontend/js/core/api.js` — Centralized API Client
+```javascript
+// ALL API calls go through here. Never call fetch() directly in features.
+const PRIMARY_API   = 'https://xarvis-ai.onrender.com';
+const BACKUP_API    = 'https://xarvis-ai-backup.onrender.com'; // Your backup Render
+const ANTHROPIC_API = 'https://api.anthropic.com/v1/messages';
+
+class XarvisAPI {
+  constructor() {
+    this.baseURL = PRIMARY_API;
+    this.timeout = 30000;
+  }
+
+  async _fetch(url, options, retries = 2) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeout);
+
+    try {
+      const res = await fetch(url, {
+        ...options,
+        signal: controller.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          ...options.headers,
+        }
+      });
+      clearTimeout(timer);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return await res.json();
+    } catch (err) {
+      clearTimeout(timer);
+      if (retries > 0) {
+        await new Promise(r => setTimeout(r, 800));
+        // Try backup on second retry
+        const fallbackURL = url.replace(PRIMARY_API, BACKUP_API);
+        return this._fetch(fallbackURL, options, retries - 1);
+      }
+      throw err;
+    }
+  }
+
+  async post(endpoint, payload) {
+    return this._fetch(`${this.baseURL}${endpoint}`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  // Claude direct fallback — when both backends fail
+  async claudeDirect(system, userMessage) {
+    const res = await fetch(ANTHROPIC_API, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1000,
+        system,
+        messages: [{ role: 'user', content: userMessage }]
+      })
+    });
+    const data = await res.json();
+    return data.content?.[0]?.text || 'No response.';
+  }
+}
+
+export const api = new XarvisAPI();
+```
+
+---
+
+## SECURITY BEST PRACTICES
+
+```
+1. .env NEVER in git
+   └── Add .env to .gitignore immediately
+   └── Use render.yaml env vars for production
+   └── Rotate any keys already exposed
+
+2. CORS — whitelist only
+   └── Never use '*' in production
+   └── CORS_ORIGINS = exact GitHub Pages URL only
+
+3. Rate Limiting
+   └── /api/chat      → 30 req/min per IP
+   └── /api/generate  → 20 req/min per IP
+   └── /api/agent     → 10 req/min per IP
+
+4. Input Validation
+   └── Validate and sanitize ALL user input with Zod
+   └── Max message length: 4000 chars
+   └── Strip HTML from all inputs
+
+5. Helmet.js
+   └── Add to every Express app — sets security headers
+
+6. Error messages
+   └── Never expose stack traces in production
+   └── Generic errors to client, full logs server-side only
+
+7. API Keys
+   └── Never in frontend code
+   └── Never in git history
+   └── Rotate quarterly
+```
+
+---
+
+## PERFORMANCE OPTIMIZATIONS
+
+```
+Frontend:
+  ✓ Self-host fonts (zero Google Fonts latency)
+  ✓ CSS custom properties for themes (no JS repaints)
+  ✓ Canvas animations use requestAnimationFrame
+  ✓ Debounce all resize/scroll handlers
+  ✓ Lazy-load tool views (don't mount until first click)
+
+Backend:
+  ✓ Keep-alive connections to AI providers
+  ✓ Response streaming for long outputs
+  ✓ Gzip compression (express middleware)
+  ✓ Health endpoint returns in <10ms
+  ✓ Stateless design (no server memory — easy horizontal scale)
+
+Render Free Tier Anti-Spin:
+  ✓ Hit /api/health every 10min via UptimeRobot (free)
+  ✓ This prevents Render free tier cold starts (~30s delay)
+```
+
+---
+
+## WHAT TO BUILD IN ORDER (PRIORITY SEQUENCE)
+
+### Phase 1 — Now (Stabilize)
+```
+□ Migrate current files into folder structure above
+□ Fix .gitignore — remove .env from git ASAP
+□ Create backup GitHub account + repo
+□ Deploy backup Render service
+□ Set up UptimeRobot on both Render URLs
+□ Create .env.example with all variables documented
+```
+
+### Phase 2 — Next 30 Days (Upgrade)
+```
+□ Refactor Agent.js, Chat.js, Generate.js into proper structure
+□ Build AI Router with Groq primary + Anthropic fallback
+□ Move ALL prompts to /prompts directory
+□ Add rate limiting middleware
+□ Add proper error handling middleware
+□ Build frontend api.js central client
+```
+
+### Phase 3 — 60-90 Days (Scale)
+```
+□ Auth system (JWT + simple user table)
+□ PostgreSQL on Render ($7/mo)
+□ Memory system — save chat history per user
+□ Analytics — track which tools get used most
+□ Streaming responses (Server-Sent Events)
+□ Onboarding flow (collect niche/goal on signup)
+```
+
+### Phase 4 — 6 Months (Business)
+```
+□ Stripe payments ($29/mo Pro tier)
+□ Redis for session caching
+□ Pinecone vector DB for long-term memory
+□ Team workspace (multi-user)
+□ API access tier for developers
+□ Mobile-responsive PWA
+```
+
+---
+
+## WHAT YOU MUST DO MANUALLY [COMPLETE LIST]
+
+```
+CRITICAL — DO THESE FIRST:
+□ 1. Create second GitHub account (backup account)
+□ 2. Create backup repo on that account, push same code
+□ 3. Create Render account on backup email
+□ 4. Deploy backend to backup Render from backup GitHub
+□ 5. Add all API keys to BOTH Render dashboards manually
+       (Render → Your Service → Environment → Add Variable)
+□ 6. Go to your current repo → check if .env is committed
+       Run: git log --all -- .env
+       If yes: rotate your API keys NOW, they're exposed
+□ 7. Add .env to .gitignore, run: git rm --cached .env
+
+BACKEND SETUP:
+□ 8. Install packages: cd backend && npm install
+□ 9. Create backend/.env from .env.example, fill real values
+□ 10. Fill render.yaml CORS_ORIGINS with your exact GitHub Pages URL
+□ 11. Add your RENDER_DEPLOY_HOOK_URL to GitHub Secrets
+        (Render → Service → Settings → Deploy Hooks → copy URL)
+        (GitHub → Repo → Settings → Secrets → Actions → New)
+
+FRONTEND:
+□ 12. Update frontend/config/frontend.config.js with both Render URLs
+□ 13. Enable GitHub Pages: Settings → Pages → Source: gh-pages branch
+□ 14. Test both primary and backup API URLs work
+
+RENDER DASHBOARD (both accounts):
+□ 15. Set NODE_ENV = production
+□ 16. Set GROQ_API_KEY = your key
+□ 17. Set ANTHROPIC_API_KEY = your key
+□ 18. Set JWT_SECRET = generate with: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+□ 19. Set CORS_ORIGINS = exact GitHub Pages URLs
+
+MONITORING:
+□ 20. Create free UptimeRobot account
+□ 21. Add monitor for primary Render URL (/api/health)
+□ 22. Add monitor for backup Render URL (/api/health)
+□ 23. Set email alerts on both
+```
+
+---
+
+## NAMING CONVENTIONS
+
+```
+Files:
+  feature.type.js         ← backend: chat.controller.js, viral.agent.js
+  Feature.js              ← frontend components: ChatWindow.js
+  feature.config.js       ← config files
+  feature.middleware.js   ← middleware
+  feature.service.js      ← services
+  feature.routes.js       ← routes
+
+Variables:
+  camelCase               ← functions, variables: getSystemPrompt
+  PascalCase              ← classes: BaseAgent, ViralAgent
+  SCREAMING_SNAKE_CASE    ← env vars: GROQ_API_KEY
+  kebab-case              ← file names where type not needed
+
+Git commits:
+  feat: add viral agent system
+  fix: chat fallback not triggering
+  chore: update groq sdk
+  docs: add api reference
+  refactor: split Agent.js into modules
+```
+
+---
+
+## FILE COUNT SUMMARY
+
+```
+Must build now (high priority):    ~18 files
+Should build in 30 days:           ~22 files
+Phase 2 (month 2-3):               ~15 files
+Phase 3+ (scale):                  ~20 files
+─────────────────────────────────────────────
+Total eventual system:             ~75 files
+Currently have:                    ~8 files
+```
+
+This is a real production architecture. Build it in phases — don't try to build all 75 files at once. Phase 1 alone makes your current system 10× more stable and professional.
