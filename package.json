@@ -1,0 +1,19 @@
+{
+  "name": "jarvis-backend",
+  "version": "1.0.0",
+  "description": "Xarvis AI backend running on Render",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "axios": "^1.6.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
