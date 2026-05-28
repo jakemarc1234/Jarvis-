@@ -1,0 +1,211 @@
+// app.js
+/**
+ * XARVIS AI — UI CONTROLLER
+ * Coordinates all panels, wires DOM events to fetch modules.
+ * Imports: chat.js, generate.js, agents.js, config.js
+ */
+
+import { CONFIG }                                                         from "./config.js";
+import { sendChat, streamChat }                                           from "./chat.js";
+import { generateViral, generatePostNext, generateCalendar, analyzeFeedback } from "./generate.js";
+import { runAgent as runAgentCore }                                       from "./agents.js";
+
+// ─── STATE ────────────────────────────────────────────────────
+let activePanel  = "chat";
+let chatHistory  = [];
+let memory       = { niche: "", platform: "YouTube Shorts", goal: "", tone: "Motivational" };
+
+// Load persisted memory
+try {
+  const saved = sessionStorage.getItem("xarvis_memory");
+  if (saved) memory = { ...memory, ...JSON.parse(saved) };
+} catch {}
+
+// ─── HELPERS ──────────────────────────────────────────────────
+const $ = (id) => document.getElementById(id);
+
+/** Minimal markdown → HTML (bold + headings + newlines) */
+const fmt = (t) =>
+  String(t)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
+    .replace(/^#{1,3}\s+(.+)$/gm, '<strong class="ai-heading">$1</strong>')
+    .replace(/\n/g, "<br>");
+
+// ─── PANEL SWITCHER ───────────────────────────────────────────
+function switchPanel(id) {
+  activePanel = id;
+  document.querySelectorAll(".nav-btn").forEach((b) =>
+    b.classList.toggle("active", b.dataset.panel === id)
+  );
+  document.querySelectorAll(".panel").forEach((p) =>
+    p.classList.toggle("active", p.id === "panel-" + id)
+  );
+  if (id === "chat" && chatHistory.length === 0) renderChatEmpty();
+}
+
+// ─── CHAT ─────────────────────────────────────────────────────
+function renderChatEmpty() {
+  $("chat-feed").innerHTML = `<div class="chat-empty"><h2>Ready.</h2></div>`;
+}
+
+function appendMsg(role, html, streaming = false) {
+  const feed = $("chat-feed");
+  const div  = document.createElement("div");
+  div.className = `msg msg-${role}${streaming ? " streaming" : ""}`;
+  div.innerHTML = `<div class="msg-body">${html}</div>`;
+  feed.appendChild(div);
+  feed.scrollTop = feed.scrollHeight;
+  return div;
+}
+
+window.chatSend = async function (prefill) {
+  const inp = $("chat-input");
+  const txt = prefill || inp.value.trim();
+  if (!txt) return;
+
+  inp.value = "";
+  chatHistory.push({ role: "user", content: txt });
+  appendMsg("user", txt.replace(/</g, "&lt;"));
+
+  const thinkEl = appendMsg("assistant", "Thinking...");
+
+  try {
+    let full = "";
+    const history = chatHistory.slice(-CONFIG.MAX_HISTORY);
+
+    // Try streaming first, fall back to non-streaming
+    try {
+      full = await streamChat(txt, history.slice(0, -1), (partial) => {
+        thinkEl.innerHTML = fmt(partial);
+      });
+    } catch {
+      full = await sendChat(txt, history.slice(0, -1));
+    }
+
+    thinkEl.innerHTML = fmt(full);
+    chatHistory.push({ role: "assistant", content: full });
+
+  } catch (err) {
+    thinkEl.innerHTML = `⚠️ ${err.message}`;
+  }
+};
+
+// ─── VIRAL ────────────────────────────────────────────────────
+window.runViral = async function () {
+  const topic    = $("viral-topic").value.trim();
+  const platform = $("viral-platform").value;
+  if (!topic) return;
+
+  const out = $("viral-output");
+  out.innerHTML = "Loading...";
+  $("viral-btn").disabled = true;
+
+  try {
+    const res = await generateViral(topic, platform, memory);
+    out.innerHTML = fmt(res);
+  } catch (err) {
+    out.innerHTML = `⚠️ ${err.message}`;
+  }
+
+  $("viral-btn").disabled = false;
+};
+
+// ─── POST NEXT ────────────────────────────────────────────────
+window.runPostNext = async function () {
+  const out = $("postnext-output");
+  out.innerHTML = "Loading...";
+  $("postnext-btn").disabled = true;
+
+  try {
+    const mem = { ...memory, niche: $("pn-niche").value || memory.niche };
+    const res = await generatePostNext(mem);
+    out.innerHTML = fmt(res);
+  } catch (err) {
+    out.innerHTML = `⚠️ ${err.message}`;
+  }
+
+  $("postnext-btn").disabled = false;
+};
+
+// ─── CALENDAR ─────────────────────────────────────────────────
+window.runCalendar = async function () {
+  const out = $("cal-output");
+  out.innerHTML = "Loading...";
+  $("cal-btn").disabled = true;
+
+  try {
+    const mem = { ...memory, niche: $("cal-niche").value || memory.niche };
+    const res = await generateCalendar(mem);
+    out.innerHTML = fmt(res);
+  } catch (err) {
+    out.innerHTML = `⚠️ ${err.message}`;
+  }
+
+  $("cal-btn").disabled = false;
+};
+
+// ─── FEEDBACK ─────────────────────────────────────────────────
+window.runFeedback = async function () {
+  const content = $("feedback-input").value.trim();
+  if (!content) return;
+
+  const out = $("feedback-output");
+  out.innerHTML = "Loading...";
+  $("feedback-btn").disabled = true;
+
+  try {
+    const res = await analyzeFeedback(content, memory);
+    out.innerHTML = fmt(res);
+  } catch (err) {
+    out.innerHTML = `⚠️ ${err.message}`;
+  }
+
+  $("feedback-btn").disabled = false;
+};
+
+// ─── AGENT ────────────────────────────────────────────────────
+window.runAgent = async function () {
+  const goal = $("agent-goal").value.trim();
+  if (!goal) return;
+
+  const out = $("agent-output");
+  out.innerHTML = "Building...";
+  $("agent-btn").disabled = true;
+
+  try {
+    await runAgentCore(goal, memory, (partial) => {
+      out.innerHTML = fmt(partial);
+    });
+  } catch (err) {
+    out.innerHTML = `⚠️ ${err.message}`;
+  }
+
+  $("agent-btn").disabled = false;
+};
+
+// ─── MEMORY ───────────────────────────────────────────────────
+window.saveMemory = function () {
+  memory = {
+    niche:    $("mem-niche").value,
+    platform: $("mem-platform").value,
+    goal:     $("mem-goal").value,
+    tone:     $("mem-tone").value,
+  };
+  sessionStorage.setItem("xarvis_memory", JSON.stringify(memory));
+};
+
+// ─── INIT ─────────────────────────────────────────────────────
+document.addEventListener("DOMContentLoaded", () => {
+  document.querySelectorAll(".nav-btn").forEach((btn) => {
+    btn.addEventListener("click", () => switchPanel(btn.dataset.panel));
+  });
+
+  switchPanel("chat");
+
+  // Non-crashing backend health check (GET, not POST)
+  fetch(`${CONFIG.API_BASE}${CONFIG.ROUTES.HEALTH}`)
+    .then((r) => r.json())
+    .then((d) => console.log("[Xarvis] Backend online:", d.timestamp))
+    .catch(() => console.warn("[Xarvis] Backend may be cold-starting"));
+});
