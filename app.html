@@ -48,6 +48,20 @@
       --font-body: 'DM Sans', sans-serif;
       --font-head: 'Syne', sans-serif;
       --font-mono: 'JetBrains Mono', monospace;
+
+      /* Clip Workspace status colors */
+      --s-find:    #4a5568;
+      --s-review:  #b7791f;
+      --s-edit:    #553c9a;
+      --s-posted:  #276749;
+      --s-find-bg:    rgba(74,85,104,.18);
+      --s-review-bg:  rgba(183,121,31,.18);
+      --s-edit-bg:    rgba(85,60,154,.22);
+      --s-posted-bg:  rgba(39,103,73,.18);
+      --s-find-bd:    rgba(74,85,104,.4);
+      --s-review-bd:  rgba(183,121,31,.4);
+      --s-edit-bd:    rgba(148,102,255,.4);
+      --s-posted-bd:  rgba(39,103,73,.4);
     }
 
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -89,6 +103,7 @@
       z-index: 1;
     }
 
+    /* ─── SIDEBAR ─── */
     #sidebar {
       width: var(--sidebar-w);
       background: var(--glass-bg);
@@ -232,6 +247,7 @@
     }
     @keyframes breathe { 0%,100%{opacity:1} 50%{opacity:.25} }
 
+    /* ─── MAIN ─── */
     #main {
       flex: 1;
       display: flex;
@@ -293,9 +309,9 @@
 
     .view { display: none; }
     .view.active { display: flex; flex-direction: column; min-height: 100%; }
-
     #view-chat.active { display: flex; height: 100%; min-height: 0; overflow: hidden; }
 
+    /* ─── CHAT ─── */
     #chat-messages {
       flex: 1;
       overflow-y: auto;
@@ -400,6 +416,7 @@
     #chat-send:hover { opacity: .88; transform: translateY(-1px); box-shadow: var(--glow-md); }
     #chat-send:disabled { opacity: .35; cursor: not-allowed; transform: none; }
 
+    /* ─── TOOL VIEWS ─── */
     .tool-view { padding: 30px 30px 60px; max-width: 860px; }
     .tool-header { margin-bottom: 28px; }
     .tool-title {
@@ -503,6 +520,30 @@
     .btn-primary:active { transform: translateY(0); }
     .btn-primary:disabled { opacity: .4; cursor: not-allowed; transform: none; box-shadow: none; }
 
+    .btn-ghost {
+      background: rgba(148,102,255,.08);
+      color: var(--accent-hi);
+      border: 1px solid rgba(148,102,255,.22);
+    }
+    .btn-ghost:hover {
+      background: rgba(148,102,255,.14);
+      border-color: rgba(148,102,255,.4);
+      transform: translateY(-1px);
+    }
+
+    .btn-sm {
+      padding: 7px 14px;
+      font-size: 12.5px;
+      border-radius: var(--r-sm);
+    }
+
+    .btn-danger {
+      background: rgba(220,38,38,.12);
+      color: #fca5a5;
+      border: 1px solid rgba(220,38,38,.25);
+    }
+    .btn-danger:hover { background: rgba(220,38,38,.2); }
+
     .output-box {
       background: rgba(5,4,10,.55);
       border: 1px solid var(--glass-bd);
@@ -572,18 +613,518 @@
       backdrop-filter: blur(20px);
     }
 
-    .tool-divider {
-      height: 1px;
-      background: linear-gradient(90deg, transparent, var(--glass-bd), transparent);
-      margin: 20px 0;
-    }
-
     #particles {
       position: fixed; inset: 0;
       pointer-events: none;
       z-index: 0;
     }
 
+    /* ════════════════════════════════════════════
+       CLIP WORKSPACE
+    ════════════════════════════════════════════ */
+    #view-clips.active {
+      display: flex;
+      flex-direction: row;
+      height: 100%;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    /* Projects sidebar */
+    #clips-projects {
+      width: 220px;
+      flex-shrink: 0;
+      border-right: 1px solid var(--glass-bd);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: rgba(5,4,10,.35);
+    }
+
+    .cp-header {
+      padding: 18px 16px 12px;
+      border-bottom: 1px solid var(--glass-bd);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .cp-header-title {
+      font-family: var(--font-mono);
+      font-size: 9px;
+      letter-spacing: .18em;
+      text-transform: uppercase;
+      color: var(--t3);
+    }
+    .cp-add-btn {
+      width: 22px; height: 22px;
+      border-radius: 6px;
+      background: rgba(148,102,255,.12);
+      border: 1px solid rgba(148,102,255,.25);
+      color: var(--accent-hi);
+      font-size: 14px;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer;
+      transition: background .15s;
+      line-height: 1;
+    }
+    .cp-add-btn:hover { background: rgba(148,102,255,.22); }
+
+    #projects-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px 0;
+    }
+
+    .project-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 16px;
+      cursor: pointer;
+      font-size: 13px;
+      color: var(--t2);
+      transition: background .15s, color .15s;
+      position: relative;
+      border: none;
+      background: none;
+      width: 100%;
+      text-align: left;
+      font-family: var(--font-body);
+    }
+    .project-item:hover { background: rgba(148,102,255,.06); color: var(--t1); }
+    .project-item.active { color: var(--t0); background: rgba(148,102,255,.10); font-weight: 500; }
+    .project-item.active::before {
+      content: '';
+      position: absolute; left: 0; top: 15%; bottom: 15%;
+      width: 2px;
+      background: var(--accent);
+      border-radius: 0 2px 2px 0;
+    }
+    .project-icon { font-size: 14px; flex-shrink: 0; }
+    .project-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .project-count {
+      font-family: var(--font-mono);
+      font-size: 9px;
+      color: var(--t3);
+      background: rgba(255,255,255,.05);
+      padding: 1px 6px;
+      border-radius: 10px;
+      border: 1px solid var(--glass-bd);
+    }
+
+    .cp-all-clips {
+      padding: 12px 16px;
+      border-top: 1px solid var(--glass-bd);
+    }
+
+    /* Main clips area */
+    #clips-main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      min-width: 0;
+    }
+
+    #clips-toolbar {
+      padding: 14px 22px;
+      border-bottom: 1px solid var(--glass-bd);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+      background: rgba(5,4,10,.2);
+    }
+
+    .ct-project-name {
+      font-family: var(--font-head);
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--t0);
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    #clips-filter-row {
+      display: flex;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+
+    .filter-pill {
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 11.5px;
+      font-family: var(--font-mono);
+      cursor: pointer;
+      border: 1px solid var(--glass-bd);
+      background: rgba(5,4,10,.4);
+      color: var(--t3);
+      transition: all .15s;
+    }
+    .filter-pill:hover { color: var(--t2); border-color: rgba(148,102,255,.3); }
+    .filter-pill.active { color: var(--accent-hi); border-color: rgba(148,102,255,.45); background: rgba(148,102,255,.10); }
+
+    #clips-grid {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px 22px;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 14px;
+      align-content: start;
+    }
+
+    /* Empty state */
+    .clips-empty {
+      grid-column: 1 / -1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 60px 20px;
+      text-align: center;
+      gap: 14px;
+    }
+    .clips-empty-icon {
+      font-size: 36px;
+      opacity: .35;
+    }
+    .clips-empty-title {
+      font-family: var(--font-head);
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--t2);
+    }
+    .clips-empty-sub {
+      font-size: 13px;
+      color: var(--t3);
+      max-width: 260px;
+      line-height: 1.6;
+    }
+
+    /* Clip card */
+    .clip-card {
+      background: rgba(13,11,24,.65);
+      border: 1px solid var(--glass-bd);
+      border-radius: 14px;
+      padding: 16px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      transition: border-color .2s, transform .2s, box-shadow .2s;
+      position: relative;
+      cursor: default;
+    }
+    .clip-card:hover {
+      border-color: rgba(148,102,255,.28);
+      transform: translateY(-1px);
+      box-shadow: 0 4px 20px rgba(0,0,0,.3);
+    }
+
+    .clip-card-top {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+    }
+    .clip-platform-badge {
+      width: 28px; height: 28px;
+      border-radius: 7px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 14px;
+      flex-shrink: 0;
+      background: rgba(255,255,255,.06);
+      border: 1px solid var(--glass-bd);
+    }
+    .clip-title {
+      font-size: 13.5px;
+      font-weight: 500;
+      color: var(--t0);
+      line-height: 1.4;
+      flex: 1;
+      word-break: break-word;
+    }
+    .clip-menu-btn {
+      background: none; border: none;
+      color: var(--t3);
+      font-size: 16px;
+      cursor: pointer;
+      padding: 0 2px;
+      line-height: 1;
+      opacity: 0;
+      transition: opacity .15s;
+    }
+    .clip-card:hover .clip-menu-btn { opacity: 1; }
+    .clip-menu-btn:hover { color: var(--t1); }
+
+    .clip-url {
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      color: var(--t3);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .clip-url a {
+      color: var(--t3);
+      text-decoration: none;
+    }
+    .clip-url a:hover { color: var(--accent-hi); text-decoration: underline; }
+
+    .clip-note {
+      font-size: 12.5px;
+      color: var(--t2);
+      line-height: 1.5;
+      background: rgba(255,255,255,.03);
+      border-radius: 7px;
+      padding: 8px 10px;
+      border-left: 2px solid rgba(148,102,255,.3);
+    }
+
+    /* Status track — the signature element */
+    .clip-status-track {
+      display: flex;
+      gap: 4px;
+      margin-top: 2px;
+    }
+    .status-step {
+      flex: 1;
+      padding: 5px 0;
+      text-align: center;
+      font-family: var(--font-mono);
+      font-size: 9px;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      border-radius: 6px;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: all .15s;
+      color: var(--t3);
+      background: rgba(255,255,255,.03);
+    }
+    .status-step:hover { color: var(--t2); background: rgba(255,255,255,.07); }
+
+    .status-step.active[data-s="find"] { background: var(--s-find-bg); border-color: var(--s-find-bd); color: #94a3b8; }
+    .status-step.active[data-s="review"] { background: var(--s-review-bg); border-color: var(--s-review-bd); color: #f6ad55; }
+    .status-step.active[data-s="edit"] { background: var(--s-edit-bg); border-color: var(--s-edit-bd); color: var(--accent-hi); }
+    .status-step.active[data-s="posted"] { background: var(--s-posted-bg); border-color: var(--s-posted-bd); color: #68d391; }
+
+    .clip-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+    }
+    .clip-tag {
+      font-family: var(--font-mono);
+      font-size: 9.5px;
+      padding: 2px 8px;
+      border-radius: 20px;
+      background: rgba(148,102,255,.08);
+      border: 1px solid rgba(148,102,255,.18);
+      color: var(--accent-hi);
+    }
+
+    /* ─── ADD CLIP MODAL ─── */
+    #clip-modal-overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,.65);
+      backdrop-filter: blur(8px);
+      z-index: 500;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    #clip-modal-overlay.open { display: flex; }
+
+    #clip-modal {
+      background: rgba(13,11,24,.95);
+      border: 1px solid var(--glass-bdh);
+      border-radius: 20px;
+      padding: 28px;
+      width: 100%;
+      max-width: 480px;
+      box-shadow: 0 24px 80px rgba(0,0,0,.7), var(--glow-md);
+    }
+
+    .modal-title {
+      font-family: var(--font-head);
+      font-size: 18px;
+      font-weight: 700;
+      margin-bottom: 22px;
+    }
+
+    .modal-field-group {
+      margin-bottom: 14px;
+    }
+    .modal-label {
+      font-family: var(--font-mono);
+      font-size: 9px;
+      letter-spacing: .16em;
+      text-transform: uppercase;
+      color: var(--t3);
+      margin-bottom: 6px;
+      display: block;
+    }
+
+    .platform-select-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+    }
+    .platform-btn {
+      flex: 1;
+      min-width: 80px;
+      padding: 8px 10px;
+      border-radius: 10px;
+      border: 1px solid var(--glass-bd);
+      background: rgba(5,4,10,.5);
+      color: var(--t2);
+      font-size: 13px;
+      cursor: pointer;
+      text-align: center;
+      transition: all .15s;
+      font-family: var(--font-body);
+    }
+    .platform-btn:hover { border-color: rgba(148,102,255,.3); color: var(--t1); }
+    .platform-btn.active { border-color: rgba(148,102,255,.5); background: rgba(148,102,255,.12); color: var(--t0); }
+
+    .modal-actions { display: flex; gap: 10px; margin-top: 22px; justify-content: flex-end; }
+
+    /* ─── PROJECT CREATE MODAL ─── */
+    #proj-modal-overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,.65);
+      backdrop-filter: blur(8px);
+      z-index: 500;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    #proj-modal-overlay.open { display: flex; }
+    #proj-modal {
+      background: rgba(13,11,24,.95);
+      border: 1px solid var(--glass-bdh);
+      border-radius: 20px;
+      padding: 28px;
+      width: 100%;
+      max-width: 380px;
+      box-shadow: 0 24px 80px rgba(0,0,0,.7);
+    }
+
+    /* ─── AI ASSIST DRAWER ─── */
+    #ai-drawer {
+      position: fixed;
+      right: 0; top: 54px; bottom: 0;
+      width: 340px;
+      background: rgba(13,11,24,.95);
+      border-left: 1px solid var(--glass-bdh);
+      backdrop-filter: blur(24px);
+      z-index: 200;
+      display: flex;
+      flex-direction: column;
+      transform: translateX(100%);
+      transition: transform .28s cubic-bezier(.4,0,.2,1);
+      box-shadow: -8px 0 40px rgba(0,0,0,.5);
+    }
+    #ai-drawer.open { transform: translateX(0); }
+
+    .drawer-header {
+      padding: 18px 20px;
+      border-bottom: 1px solid var(--glass-bd);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .drawer-title {
+      font-family: var(--font-head);
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .drawer-close {
+      background: none; border: none;
+      color: var(--t2); font-size: 18px;
+      cursor: pointer;
+    }
+    .drawer-close:hover { color: var(--t0); }
+
+    .drawer-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 18px 20px;
+    }
+
+    .ai-context-label {
+      font-family: var(--font-mono);
+      font-size: 9px;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+      color: var(--t3);
+      margin-bottom: 6px;
+    }
+    .ai-context-title {
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--t1);
+      margin-bottom: 16px;
+      line-height: 1.4;
+    }
+
+    .ai-quick-btns {
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+      margin-bottom: 18px;
+    }
+    .ai-quick-btn {
+      width: 100%;
+      padding: 10px 14px;
+      border-radius: 10px;
+      border: 1px solid var(--glass-bd);
+      background: rgba(5,4,10,.4);
+      color: var(--t1);
+      font-size: 13px;
+      text-align: left;
+      cursor: pointer;
+      font-family: var(--font-body);
+      transition: all .15s;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .ai-quick-btn:hover { background: rgba(148,102,255,.10); border-color: rgba(148,102,255,.3); color: var(--t0); }
+    .ai-quick-btn-icon { font-size: 14px; flex-shrink: 0; }
+
+    .drawer-output {
+      background: rgba(5,4,10,.5);
+      border: 1px solid var(--glass-bd);
+      border-radius: var(--r);
+      padding: 14px 16px;
+      font-size: 13.5px;
+      line-height: 1.7;
+      color: var(--t1);
+      white-space: pre-wrap;
+      min-height: 80px;
+      margin-top: 14px;
+      transition: border-color .3s;
+    }
+    .drawer-output.active { border-color: rgba(148,102,255,.25); }
+    .drawer-output.streaming::after {
+      content: '▋';
+      animation: blink .65s infinite;
+      color: var(--accent);
+    }
+    .drawer-output.empty {
+      color: var(--t3);
+      font-style: italic;
+      font-size: 12.5px;
+    }
+
+    /* ─── MOBILE ─── */
     @media(max-width: 720px) {
       #sidebar {
         position: fixed;
@@ -607,6 +1148,13 @@
       .tool-view { padding: 20px 18px 50px; }
       #chat-messages { padding: 18px 18px 14px; }
       #chat-input-row { padding: 12px 16px 16px; }
+      #clips-projects { display: none; }
+      #clips-projects.mobile-open { display: flex; position: fixed; inset: 0; z-index: 300; width: 240px; }
+      #ai-drawer { width: 100%; top: 54px; }
+    }
+
+    @media(max-width: 480px) {
+      #clips-grid { grid-template-columns: 1fr; padding: 14px; }
     }
   </style>
 </head>
@@ -627,8 +1175,12 @@
     </div>
 
     <div class="sec-lbl">Workspace</div>
-    <button class="nav-item active" onclick="switchView('chat',this)">
+    <button class="nav-item" onclick="switchView('chat',this)">
       <span class="nav-icon">◎</span> AI Advisor
+    </button>
+    <button class="nav-item active" onclick="switchView('clips',this)">
+      <span class="nav-icon">◧</span> Clip Workspace
+      <span class="nav-badge">NEW</span>
     </button>
 
     <div class="sec-lbl">Creator Tools</div>
@@ -648,7 +1200,6 @@
     <div class="sec-lbl">Intelligence</div>
     <button class="nav-item" onclick="switchView('agent',this)">
       <span class="nav-icon">◐</span> Agent Mode
-      <span class="nav-badge">NEW</span>
     </button>
 
     <div class="sec-lbl">Profile</div>
@@ -667,7 +1218,7 @@
       <button id="menu-btn" onclick="openSidebar()">☰</button>
       <span class="tb-breadcrumb">Xarvis AI</span>
       <span class="tb-sep">›</span>
-      <span class="tb-title" id="topbar-title">AI Advisor</span>
+      <span class="tb-title" id="topbar-title">Clip Workspace</span>
       <div class="tb-pill">
         <div class="live-dot"></div>
         Online
@@ -676,8 +1227,8 @@
 
     <div id="content">
 
-      <!-- CHAT -->
-      <div id="view-chat" class="view active">
+      <!-- ══ CHAT ══ -->
+      <div id="view-chat" class="view">
         <div id="chat-messages">
           <div class="msg ai msg-welcome">
             <div class="msg-avatar">✦</div>
@@ -696,7 +1247,45 @@
         </div>
       </div>
 
-      <!-- VIRAL STUDIO -->
+      <!-- ══ CLIP WORKSPACE ══ -->
+      <div id="view-clips" class="view active">
+        <!-- Project rail -->
+        <div id="clips-projects">
+          <div class="cp-header">
+            <span class="cp-header-title">Projects</span>
+            <button class="cp-add-btn" onclick="openProjModal()" title="New project">+</button>
+          </div>
+          <div id="projects-list">
+            <!-- rendered by JS -->
+          </div>
+          <div class="cp-all-clips">
+            <button class="project-item" id="all-clips-btn" onclick="selectProject('__all__',this)" style="border-radius:8px;width:100%">
+              <span class="project-icon">◧</span>
+              <span class="project-name">All clips</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Clips main -->
+        <div id="clips-main">
+          <div id="clips-toolbar">
+            <div class="ct-project-name" id="ct-project-name">All clips</div>
+            <div id="clips-filter-row">
+              <button class="filter-pill active" onclick="setFilter('all',this)">All</button>
+              <button class="filter-pill" onclick="setFilter('find',this)">To Find</button>
+              <button class="filter-pill" onclick="setFilter('review',this)">Reviewing</button>
+              <button class="filter-pill" onclick="setFilter('edit',this)">Editing</button>
+              <button class="filter-pill" onclick="setFilter('posted',this)">Posted</button>
+            </div>
+            <button class="btn btn-ghost btn-sm" onclick="openClipModal()">+ Add Clip</button>
+          </div>
+          <div id="clips-grid">
+            <!-- rendered by JS -->
+          </div>
+        </div>
+      </div>
+
+      <!-- ══ VIRAL STUDIO ══ -->
       <div id="view-viral" class="view">
         <div class="tool-view">
           <div class="tool-header">
@@ -722,7 +1311,7 @@
         </div>
       </div>
 
-      <!-- POST NEXT -->
+      <!-- ══ POST NEXT ══ -->
       <div id="view-postnext" class="view">
         <div class="tool-view">
           <div class="tool-header">
@@ -741,7 +1330,7 @@
         </div>
       </div>
 
-      <!-- CALENDAR -->
+      <!-- ══ CALENDAR ══ -->
       <div id="view-calendar" class="view">
         <div class="tool-view">
           <div class="tool-header">
@@ -760,7 +1349,7 @@
         </div>
       </div>
 
-      <!-- FEEDBACK -->
+      <!-- ══ FEEDBACK ══ -->
       <div id="view-feedback" class="view">
         <div class="tool-view">
           <div class="tool-header">
@@ -777,7 +1366,7 @@
         </div>
       </div>
 
-      <!-- AGENT MODE -->
+      <!-- ══ AGENT MODE ══ -->
       <div id="view-agent" class="view">
         <div class="tool-view">
           <div class="tool-header">
@@ -787,17 +1376,14 @@
           <div class="card">
             <div class="card-label">Your Big Goal</div>
             <textarea id="agent-goal" class="field" rows="3"
-              placeholder="e.g. 'Build a content business from zero' · 'Hit 100k in 90 days' · 'Launch my first digital product'"></textarea>
-            <p style="font-size:12px;color:var(--t3);margin-top:10px;font-family:var(--font-mono)">
-              Try: "Build a content business from zero" · "Hit 100k in 90 days" · "Launch my first digital product"
-            </p>
+              placeholder="e.g. 'Build a content business from zero' · 'Hit 100k in 90 days'"></textarea>
           </div>
           <button class="btn btn-primary" onclick="runAgent()" id="agent-btn">◐ Build My Execution Plan</button>
           <div id="agent-output" class="output-box empty">Your full roadmap will appear here…</div>
         </div>
       </div>
 
-      <!-- MEMORY -->
+      <!-- ══ MEMORY ══ -->
       <div id="view-memory" class="view">
         <div class="tool-view">
           <div class="tool-header">
@@ -845,22 +1431,113 @@
         </div>
       </div>
 
+    </div><!-- /content -->
+  </div><!-- /main -->
+</div><!-- /app -->
+
+<!-- ══ ADD CLIP MODAL ══ -->
+<div id="clip-modal-overlay">
+  <div id="clip-modal">
+    <div class="modal-title">Add Clip</div>
+
+    <div class="modal-field-group">
+      <label class="modal-label">Platform</label>
+      <div class="platform-select-row" id="platform-select-row">
+        <button class="platform-btn active" onclick="selectPlatformBtn(this,'youtube')">▶ YouTube</button>
+        <button class="platform-btn" onclick="selectPlatformBtn(this,'tiktok')">♪ TikTok</button>
+        <button class="platform-btn" onclick="selectPlatformBtn(this,'instagram')">◉ Instagram</button>
+        <button class="platform-btn" onclick="selectPlatformBtn(this,'other')">✦ Other</button>
+      </div>
     </div>
+
+    <div class="modal-field-group">
+      <label class="modal-label">URL</label>
+      <input id="clip-url-input" class="field" type="url" placeholder="https://..." />
+    </div>
+
+    <div class="modal-field-group">
+      <label class="modal-label">Title / Description</label>
+      <input id="clip-title-input" class="field" placeholder="What's this clip about?" />
+    </div>
+
+    <div class="modal-field-group">
+      <label class="modal-label">Notes (optional)</label>
+      <textarea id="clip-note-input" class="field" rows="2" placeholder="Ideas, timestamps, context…"></textarea>
+    </div>
+
+    <div class="modal-field-group">
+      <label class="modal-label">Tags (comma-separated)</label>
+      <input id="clip-tags-input" class="field" placeholder="hook, fitness, trending" />
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeClipModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveClip()">Add Clip</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ NEW PROJECT MODAL ══ -->
+<div id="proj-modal-overlay">
+  <div id="proj-modal">
+    <div class="modal-title">New Project</div>
+    <div class="modal-field-group">
+      <label class="modal-label">Project Name</label>
+      <input id="proj-name-input" class="field" placeholder="e.g. Weekly Fitness Series, Client — Nike" />
+    </div>
+    <div class="modal-field-group">
+      <label class="modal-label">Icon (emoji)</label>
+      <input id="proj-icon-input" class="field" placeholder="📁" maxlength="2" style="font-size:20px;letter-spacing:4px;" />
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeProjModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveProject()">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ AI ASSIST DRAWER ══ -->
+<div id="ai-drawer">
+  <div class="drawer-header">
+    <div class="drawer-title">✦ AI Assist</div>
+    <button class="drawer-close" onclick="closeAiDrawer()">✕</button>
+  </div>
+  <div class="drawer-body">
+    <div class="ai-context-label">Working on</div>
+    <div class="ai-context-title" id="drawer-clip-title">—</div>
+    <div class="ai-quick-btns">
+      <button class="ai-quick-btn" onclick="aiAssist('hooks')">
+        <span class="ai-quick-btn-icon">🪝</span> Generate 5 hooks
+      </button>
+      <button class="ai-quick-btn" onclick="aiAssist('titles')">
+        <span class="ai-quick-btn-icon">📝</span> Suggest titles
+      </button>
+      <button class="ai-quick-btn" onclick="aiAssist('captions')">
+        <span class="ai-quick-btn-icon">💬</span> Write captions
+      </button>
+      <button class="ai-quick-btn" onclick="aiAssist('ideas')">
+        <span class="ai-quick-btn-icon">💡</span> Brainstorm clip ideas
+      </button>
+    </div>
+    <div id="drawer-output" class="drawer-output empty">Choose an action above to get AI suggestions for this clip.</div>
   </div>
 </div>
 
 <div id="toast"></div>
 
 <script>
-/* ─── CONFIG — FIXED: points to actual backend ─── */
+/* ══════════════════════════════════════════════
+   CONFIG
+══════════════════════════════════════════════ */
 var API_BASE = "https://jarvis-rxir.onrender.com";
 
-/* ─── STATE ─── */
+/* ══════════════════════════════════════════════
+   EXISTING STATE (untouched)
+══════════════════════════════════════════════ */
 var userMemory = {};
 var chatHistory = [];
 var selectedFormat = "YouTube Shorts";
 
-/* ─── BOOT: load memory ─── */
 (function() {
   try {
     var s = localStorage.getItem("xarvis_memory");
@@ -876,7 +1553,291 @@ var selectedFormat = "YouTube Shorts";
   } catch(e) {}
 })();
 
-/* ─── PARTICLES ─── */
+/* ══════════════════════════════════════════════
+   CLIP WORKSPACE STATE
+══════════════════════════════════════════════ */
+var CW = {
+  projects: [],   // [{id, name, icon}]
+  clips: [],      // [{id, projectId, title, url, platform, note, tags, status, createdAt}]
+  activeProject: '__all__',
+  activeFilter: 'all',
+  activeClipId: null,   // for AI drawer
+  newClipPlatform: 'youtube'
+};
+
+var PLATFORM_ICONS = {
+  youtube: '▶',
+  tiktok: '♪',
+  instagram: '◉',
+  other: '✦'
+};
+
+// ── Persistence ──
+function cwSave() {
+  try { localStorage.setItem('xarvis_clips_v1', JSON.stringify({ projects: CW.projects, clips: CW.clips })); } catch(e) {}
+}
+function cwLoad() {
+  try {
+    var raw = localStorage.getItem('xarvis_clips_v1');
+    if (!raw) return;
+    var data = JSON.parse(raw);
+    CW.projects = data.projects || [];
+    CW.clips = data.clips || [];
+  } catch(e) {}
+}
+
+// ── ID gen ──
+function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2,6); }
+
+/* ══════════════════════════════════════════════
+   PROJECTS
+══════════════════════════════════════════════ */
+function openProjModal() {
+  document.getElementById('proj-name-input').value = '';
+  document.getElementById('proj-icon-input').value = '';
+  document.getElementById('proj-modal-overlay').classList.add('open');
+  setTimeout(function(){ document.getElementById('proj-name-input').focus(); }, 80);
+}
+function closeProjModal() { document.getElementById('proj-modal-overlay').classList.remove('open'); }
+
+function saveProject() {
+  var name = document.getElementById('proj-name-input').value.trim();
+  if (!name) { showToast('Enter a project name.'); return; }
+  var icon = document.getElementById('proj-icon-input').value.trim() || '📁';
+  var proj = { id: uid(), name: name, icon: icon };
+  CW.projects.push(proj);
+  cwSave();
+  closeProjModal();
+  renderProjects();
+  selectProject(proj.id, null);
+}
+
+function renderProjects() {
+  var list = document.getElementById('projects-list');
+  list.innerHTML = '';
+  CW.projects.forEach(function(p) {
+    var count = CW.clips.filter(function(c){ return c.projectId === p.id; }).length;
+    var btn = document.createElement('button');
+    btn.className = 'project-item' + (CW.activeProject === p.id ? ' active' : '');
+    btn.dataset.pid = p.id;
+    btn.innerHTML =
+      '<span class="project-icon">' + p.icon + '</span>' +
+      '<span class="project-name">' + escHtml(p.name) + '</span>' +
+      '<span class="project-count">' + count + '</span>';
+    btn.onclick = function(){ selectProject(p.id, btn); };
+    list.appendChild(btn);
+  });
+
+  // sync all-clips btn
+  var allBtn = document.getElementById('all-clips-btn');
+  if (allBtn) allBtn.className = 'project-item' + (CW.activeProject === '__all__' ? ' active' : '');
+}
+
+function selectProject(id, btn) {
+  CW.activeProject = id;
+  renderProjects();
+  var nameEl = document.getElementById('ct-project-name');
+  if (id === '__all__') {
+    nameEl.textContent = 'All clips';
+  } else {
+    var p = CW.projects.find(function(x){ return x.id === id; });
+    nameEl.textContent = p ? p.name : 'Project';
+  }
+  renderClips();
+}
+
+/* ══════════════════════════════════════════════
+   CLIPS
+══════════════════════════════════════════════ */
+function openClipModal() {
+  // reset
+  document.getElementById('clip-url-input').value = '';
+  document.getElementById('clip-title-input').value = '';
+  document.getElementById('clip-note-input').value = '';
+  document.getElementById('clip-tags-input').value = '';
+  document.querySelectorAll('.platform-btn').forEach(function(b){ b.classList.remove('active'); });
+  document.querySelector('.platform-btn').classList.add('active');
+  CW.newClipPlatform = 'youtube';
+  document.getElementById('clip-modal-overlay').classList.add('open');
+  setTimeout(function(){ document.getElementById('clip-url-input').focus(); }, 80);
+}
+function closeClipModal() { document.getElementById('clip-modal-overlay').classList.remove('open'); }
+
+function selectPlatformBtn(el, platform) {
+  document.querySelectorAll('.platform-btn').forEach(function(b){ b.classList.remove('active'); });
+  el.classList.add('active');
+  CW.newClipPlatform = platform;
+}
+
+function saveClip() {
+  var url   = document.getElementById('clip-url-input').value.trim();
+  var title = document.getElementById('clip-title-input').value.trim();
+  if (!title && !url) { showToast('Add a URL or title.'); return; }
+  var note  = document.getElementById('clip-note-input').value.trim();
+  var rawTags = document.getElementById('clip-tags-input').value;
+  var tags  = rawTags.split(',').map(function(t){ return t.trim(); }).filter(Boolean);
+
+  var clip = {
+    id: uid(),
+    projectId: CW.activeProject === '__all__' ? (CW.projects[0] ? CW.projects[0].id : '__none__') : CW.activeProject,
+    title: title || url,
+    url: url,
+    platform: CW.newClipPlatform,
+    note: note,
+    tags: tags,
+    status: 'find',
+    createdAt: Date.now()
+  };
+  CW.clips.push(clip);
+  cwSave();
+  closeClipModal();
+  renderProjects();
+  renderClips();
+  showToast('Clip saved.');
+}
+
+function setClipStatus(clipId, status) {
+  var clip = CW.clips.find(function(c){ return c.id === clipId; });
+  if (!clip) return;
+  clip.status = status;
+  cwSave();
+  renderClips();
+}
+
+function deleteClip(clipId) {
+  if (!confirm('Delete this clip?')) return;
+  CW.clips = CW.clips.filter(function(c){ return c.id !== clipId; });
+  cwSave();
+  renderProjects();
+  renderClips();
+}
+
+function setFilter(f, btn) {
+  CW.activeFilter = f;
+  document.querySelectorAll('.filter-pill').forEach(function(p){ p.classList.remove('active'); });
+  if (btn) btn.classList.add('active');
+  renderClips();
+}
+
+function getVisibleClips() {
+  return CW.clips.filter(function(c) {
+    var projMatch = CW.activeProject === '__all__' || c.projectId === CW.activeProject;
+    var filterMatch = CW.activeFilter === 'all' || c.status === CW.activeFilter;
+    return projMatch && filterMatch;
+  });
+}
+
+var STATUS_LABELS = { find: 'To Find', review: 'Reviewing', edit: 'Editing', posted: 'Posted' };
+
+function renderClips() {
+  var grid = document.getElementById('clips-grid');
+  var clips = getVisibleClips();
+
+  if (!clips.length) {
+    grid.innerHTML =
+      '<div class="clips-empty">' +
+        '<div class="clips-empty-icon">◧</div>' +
+        '<div class="clips-empty-title">' + (CW.activeFilter === 'all' ? 'No clips yet' : 'Nothing here') + '</div>' +
+        '<div class="clips-empty-sub">' +
+          (CW.activeFilter === 'all'
+            ? 'Click "+ Add Clip" to save your first YouTube, TikTok, or Instagram link.'
+            : 'No clips with this status. Move some clips here using the status track.') +
+        '</div>' +
+      '</div>';
+    return;
+  }
+
+  grid.innerHTML = '';
+  clips.forEach(function(clip) {
+    var card = document.createElement('div');
+    card.className = 'clip-card';
+    card.dataset.id = clip.id;
+
+    var tagsHtml = clip.tags.length
+      ? '<div class="clip-tags">' + clip.tags.map(function(t){ return '<span class="clip-tag">' + escHtml(t) + '</span>'; }).join('') + '</div>'
+      : '';
+
+    var noteHtml = clip.note ? '<div class="clip-note">' + escHtml(clip.note) + '</div>' : '';
+
+    var urlHtml = clip.url
+      ? '<div class="clip-url"><a href="' + escHtml(clip.url) + '" target="_blank" rel="noopener">' + escHtml(shortenUrl(clip.url)) + '</a></div>'
+      : '';
+
+    var statusTrack = ['find','review','edit','posted'].map(function(s) {
+      return '<button class="status-step' + (clip.status === s ? ' active' : '') + '" data-s="' + s + '" ' +
+        'onclick="setClipStatus(\'' + clip.id + '\',\'' + s + '\')" title="' + STATUS_LABELS[s] + '">' +
+        STATUS_LABELS[s] + '</button>';
+    }).join('');
+
+    card.innerHTML =
+      '<div class="clip-card-top">' +
+        '<div class="clip-platform-badge">' + (PLATFORM_ICONS[clip.platform] || '✦') + '</div>' +
+        '<div class="clip-title">' + escHtml(clip.title) + '</div>' +
+        '<button class="clip-menu-btn" onclick="openAiDrawer(\'' + clip.id + '\')" title="AI Assist">✦</button>' +
+        '<button class="clip-menu-btn" onclick="deleteClip(\'' + clip.id + '\')" title="Delete">✕</button>' +
+      '</div>' +
+      urlHtml +
+      noteHtml +
+      '<div class="clip-status-track">' + statusTrack + '</div>' +
+      tagsHtml;
+
+    grid.appendChild(card);
+  });
+}
+
+/* ══════════════════════════════════════════════
+   AI ASSIST DRAWER
+══════════════════════════════════════════════ */
+function openAiDrawer(clipId) {
+  CW.activeClipId = clipId;
+  var clip = CW.clips.find(function(c){ return c.id === clipId; });
+  document.getElementById('drawer-clip-title').textContent = clip ? clip.title : '—';
+  document.getElementById('drawer-output').className = 'drawer-output empty';
+  document.getElementById('drawer-output').textContent = 'Choose an action above to get AI suggestions for this clip.';
+  document.getElementById('ai-drawer').classList.add('open');
+}
+function closeAiDrawer() { document.getElementById('ai-drawer').classList.remove('open'); }
+
+function aiAssist(type) {
+  var clip = CW.clips.find(function(c){ return c.id === CW.activeClipId; });
+  if (!clip) return;
+
+  var prompts = {
+    hooks: 'Generate 5 scroll-stopping hooks for a ' + clip.platform + ' clip titled: "' + clip.title + '". Each hook should be one punchy sentence under 10 words. Format as a numbered list.',
+    titles: 'Suggest 5 click-worthy titles for a ' + clip.platform + ' clip about: "' + clip.title + '". Make them curiosity-driven and platform-optimized.',
+    captions: 'Write 3 caption options for a ' + clip.platform + ' post about: "' + clip.title + '". Include emojis and a call to action.',
+    ideas: 'Brainstorm 5 related clip ideas that could follow "' + clip.title + '" on ' + clip.platform + '. Focus on what\'s trending and what the audience would watch next.'
+  };
+
+  var out = document.getElementById('drawer-output');
+  out.className = 'drawer-output streaming';
+  out.textContent = '';
+
+  apiCall('/api/chat', { message: prompts[type], history: [], systemPrompt: 'You are Xarvis, an expert content strategist. Be specific, punchy, and immediately useful. No fluff.' })
+    .then(function(data) {
+      out.className = 'drawer-output active';
+      out.textContent = extractText(data);
+    })
+    .catch(function(err) {
+      out.className = 'drawer-output';
+      out.textContent = '⚠️ Could not reach AI. ' + err.message;
+    });
+}
+
+/* ══════════════════════════════════════════════
+   UTILS
+══════════════════════════════════════════════ */
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function shortenUrl(url) {
+  try { var u = new URL(url); return u.hostname + (u.pathname.length > 1 ? u.pathname.slice(0,28) + (u.pathname.length > 28 ? '…' : '') : ''); }
+  catch(e) { return url.slice(0,40); }
+}
+
+/* ══════════════════════════════════════════════
+   PARTICLES (unchanged)
+══════════════════════════════════════════════ */
 (function() {
   var c = document.getElementById("particles");
   var ctx = c.getContext("2d");
@@ -887,8 +1848,7 @@ var selectedFormat = "YouTube Shorts";
   var cols = ["148,102,255","124,79,246","99,102,241","180,143,255","100,48,232"];
   function mk() {
     return {
-      x: Math.random() * W,
-      y: Math.random() * H,
+      x: Math.random() * W, y: Math.random() * H,
       r: Math.random() * 1.3 + 0.3,
       vy: -(Math.random() * 0.22 + 0.04),
       vx: (Math.random() - 0.5) * 0.1,
@@ -901,12 +1861,10 @@ var selectedFormat = "YouTube Shorts";
   function draw() {
     ctx.clearRect(0, 0, W, H);
     pts.forEach(function(p, i) {
-      p.y += p.vy; p.x += p.vx;
-      p.a += p.da;
+      p.y += p.vy; p.x += p.vx; p.a += p.da;
       if (p.a <= 0 || p.a >= 0.28) p.da *= -1;
       if (p.y < -10) { pts[i] = mk(); pts[i].y = H + 10; }
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
       ctx.fillStyle = "rgba(" + p.col + "," + p.a.toFixed(2) + ")";
       ctx.fill();
     });
@@ -915,15 +1873,14 @@ var selectedFormat = "YouTube Shorts";
   draw();
 })();
 
-/* ─── NAV ─── */
+/* ══════════════════════════════════════════════
+   NAV (unchanged)
+══════════════════════════════════════════════ */
 var VIEW_TITLES = {
-  chat: "AI Advisor",
-  viral: "Viral Studio",
-  postnext: "Post Next AI",
-  calendar: "7-Day Calendar",
-  feedback: "Feedback AI",
-  agent: "Agent Mode",
-  memory: "My Memory"
+  chat: "AI Advisor", clips: "Clip Workspace",
+  viral: "Viral Studio", postnext: "Post Next AI",
+  calendar: "7-Day Calendar", feedback: "Feedback AI",
+  agent: "Agent Mode", memory: "My Memory"
 };
 
 function switchView(name, btn) {
@@ -935,6 +1892,7 @@ function switchView(name, btn) {
   var el = document.getElementById("topbar-title");
   if (el) el.textContent = VIEW_TITLES[name] || name;
   closeSidebar();
+  closeAiDrawer();
 }
 
 function openSidebar() {
@@ -946,7 +1904,9 @@ function closeSidebar() {
   document.getElementById("sidebar-overlay").classList.remove("visible");
 }
 
-/* ─── PILLS ─── */
+/* ══════════════════════════════════════════════
+   PILLS (unchanged)
+══════════════════════════════════════════════ */
 function selectPill(el, groupId) {
   var g = document.getElementById(groupId);
   if (!g) return;
@@ -955,7 +1915,9 @@ function selectPill(el, groupId) {
   if (groupId === "format-pills") selectedFormat = el.textContent.trim();
 }
 
-/* ─── TOAST ─── */
+/* ══════════════════════════════════════════════
+   TOAST (unchanged)
+══════════════════════════════════════════════ */
 function showToast(msg) {
   var t = document.getElementById("toast");
   t.textContent = msg;
@@ -963,7 +1925,9 @@ function showToast(msg) {
   setTimeout(function() { t.style.display = "none"; }, 4500);
 }
 
-/* ─── UTILS ─── */
+/* ══════════════════════════════════════════════
+   UTILS (unchanged)
+══════════════════════════════════════════════ */
 function autoResize(el) {
   el.style.height = "auto";
   el.style.height = Math.min(el.scrollHeight, 160) + "px";
@@ -984,7 +1948,6 @@ function extractText(data) {
   return JSON.stringify(data, null, 2);
 }
 
-/* ─── API CALL ─── */
 function apiCall(endpoint, payload, retries) {
   retries = (retries === undefined) ? 1 : retries;
   return fetch(API_BASE + endpoint, {
@@ -1003,7 +1966,9 @@ function apiCall(endpoint, payload, retries) {
   });
 }
 
-/* ─── CHAT ─── */
+/* ══════════════════════════════════════════════
+   CHAT (unchanged)
+══════════════════════════════════════════════ */
 function chatKeydown(e) {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
 }
@@ -1030,8 +1995,7 @@ function sendChat() {
   var text = inp.value.trim();
   if (!text) return;
   appendMsg("user", text);
-  inp.value = "";
-  inp.style.height = "auto";
+  inp.value = ""; inp.style.height = "auto";
   chatHistory.push({ role: "user", content: text });
   var sendBtn = document.getElementById("chat-send");
   sendBtn.disabled = true;
@@ -1066,16 +2030,16 @@ function sendChat() {
     .finally(function() { sendBtn.disabled = false; });
 }
 
-/* ─── VIRAL ─── */
+/* ══════════════════════════════════════════════
+   TOOL FUNCTIONS (unchanged)
+══════════════════════════════════════════════ */
 function runViral() {
   var idea = document.getElementById("viral-idea").value.trim();
   if (!idea) { showToast("Enter a content idea first."); return; }
   var btn = document.getElementById("viral-btn");
   var out = document.getElementById("viral-output");
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span> Generating…';
-  out.className = "output-box streaming";
-  out.textContent = "";
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Generating…';
+  out.className = "output-box streaming"; out.textContent = "";
   apiCall("/api/generate", {
     prompt: idea, format: selectedFormat, type: "viral",
     niche: userMemory.niche || "", goal: userMemory.goal || "",
@@ -1088,15 +2052,13 @@ function runViral() {
   }).finally(function() { btn.disabled = false; btn.innerHTML = "⚡ Generate Content Package"; });
 }
 
-/* ─── POST NEXT ─── */
 function runPostNext() {
   var niche = document.getElementById("postnext-niche").value.trim() || userMemory.niche || "";
   var goal  = document.getElementById("postnext-goal").value.trim()  || userMemory.goal  || "";
   if (!niche) { showToast("Enter your niche first."); return; }
   var btn = document.getElementById("postnext-btn");
   var out = document.getElementById("postnext-output");
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span> Thinking…';
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Thinking…';
   out.className = "output-box streaming"; out.textContent = "";
   apiCall("/api/generate", {
     prompt: "What should I post today?", type: "postnext",
@@ -1110,7 +2072,6 @@ function runPostNext() {
   }).finally(function() { btn.disabled = false; btn.innerHTML = "◈ Tell Me What To Post"; });
 }
 
-/* ─── CALENDAR ─── */
 function runCalendar() {
   var niche = document.getElementById("cal-niche").value.trim() || userMemory.niche || "";
   var plat  = document.getElementById("cal-platform").value.trim() || userMemory.platform || "YouTube Shorts";
@@ -1118,8 +2079,7 @@ function runCalendar() {
   if (!niche) { showToast("Enter your niche first."); return; }
   var btn = document.getElementById("cal-btn");
   var out = document.getElementById("cal-output");
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span> Building calendar…';
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Building calendar…';
   out.className = "output-box streaming"; out.textContent = "";
   apiCall("/api/generate", {
     prompt: "Generate a 7-day content calendar", type: "calendar",
@@ -1132,14 +2092,12 @@ function runCalendar() {
   }).finally(function() { btn.disabled = false; btn.innerHTML = "▦ Generate My Week"; });
 }
 
-/* ─── FEEDBACK ─── */
 function runFeedback() {
   var idea = document.getElementById("feedback-idea").value.trim();
   if (!idea) { showToast("Paste your content first."); return; }
   var btn = document.getElementById("feedback-btn");
   var out = document.getElementById("feedback-output");
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span> Analyzing…';
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Analyzing…';
   out.className = "output-box streaming"; out.textContent = "";
   apiCall("/api/generate", {
     prompt: idea, type: "feedback",
@@ -1153,14 +2111,12 @@ function runFeedback() {
   }).finally(function() { btn.disabled = false; btn.innerHTML = "↗ Analyze My Content"; });
 }
 
-/* ─── AGENT ─── */
 function runAgent() {
   var goal = document.getElementById("agent-goal").value.trim();
   if (!goal) { showToast("Enter your big goal first."); return; }
   var btn = document.getElementById("agent-btn");
   var out = document.getElementById("agent-output");
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span> Building your roadmap…';
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Building your roadmap…';
   out.className = "output-box streaming"; out.textContent = "";
   apiCall("/api/agent/plan", {
     goal: goal, niche: userMemory.niche || "",
@@ -1177,7 +2133,6 @@ function runAgent() {
   }).finally(function() { btn.disabled = false; btn.innerHTML = "◐ Build My Execution Plan"; });
 }
 
-/* ─── MEMORY ─── */
 function saveMemory() {
   userMemory = {
     niche:    document.getElementById("mem-niche").value.trim(),
@@ -1207,14 +2162,90 @@ function renderContext() {
   }).join("");
 }
 
-/* ─── INIT ─── */
+/* ══════════════════════════════════════════════
+   KEYBOARD SHORTCUTS
+══════════════════════════════════════════════ */
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') {
+    closeClipModal();
+    closeProjModal();
+    closeAiDrawer();
+  }
+  // Cmd/Ctrl+K to add clip when in workspace
+  if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+    var clipView = document.getElementById('view-clips');
+    if (clipView && clipView.classList.contains('active')) {
+      e.preventDefault();
+      openClipModal();
+    }
+  }
+});
+
+// Close modals on overlay click
+document.getElementById('clip-modal-overlay').addEventListener('click', function(e) {
+  if (e.target === this) closeClipModal();
+});
+document.getElementById('proj-modal-overlay').addEventListener('click', function(e) {
+  if (e.target === this) closeProjModal();
+});
+
+/* ══════════════════════════════════════════════
+   INIT
+══════════════════════════════════════════════ */
 document.addEventListener("DOMContentLoaded", function() {
+  // Load clips data
+  cwLoad();
+  renderProjects();
+  selectProject('__all__', null);
+
+  // Seed demo data if fresh install
+  if (CW.projects.length === 0 && CW.clips.length === 0) {
+    CW.projects = [
+      { id: 'demo-1', name: 'Fitness Series', icon: '💪' },
+      { id: 'demo-2', name: 'Brand Collabs', icon: '🤝' }
+    ];
+    CW.clips = [
+      {
+        id: 'c1', projectId: 'demo-1',
+        title: '5 Mistakes beginners make in the gym',
+        url: 'https://youtube.com/shorts/example1',
+        platform: 'youtube',
+        note: 'Strong hook potential. Film near the squat rack.',
+        tags: ['hook','fitness','beginner'],
+        status: 'edit',
+        createdAt: Date.now() - 86400000
+      },
+      {
+        id: 'c2', projectId: 'demo-1',
+        title: 'Morning routine that burns 500 calories',
+        url: 'https://tiktok.com/@example/video/123',
+        platform: 'tiktok',
+        note: '',
+        tags: ['morning','calories'],
+        status: 'review',
+        createdAt: Date.now() - 43200000
+      },
+      {
+        id: 'c3', projectId: 'demo-2',
+        title: 'Nike collab unboxing — authentic reaction',
+        url: '',
+        platform: 'instagram',
+        note: 'Keep it raw and genuine. No scripted lines.',
+        tags: ['collab','brand','nike'],
+        status: 'find',
+        createdAt: Date.now() - 3600000
+      }
+    ];
+    cwSave();
+    renderProjects();
+    selectProject('__all__', null);
+  }
+
   renderContext();
+
   fetch(API_BASE + "/api/health")
     .then(function(r) { return r.json(); })
-    .then(function(d) {
-      if (!d.ok) showToast("⚠️ Backend health check failed.");
-    })
+    .then(function(d) { if (!d.ok) showToast("⚠️ Backend health check failed."); })
     .catch(function() {
       showToast("⚠️ Backend warming up (Render cold start). First request may take ~30s.");
     });
