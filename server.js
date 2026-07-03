@@ -1,20 +1,25 @@
 /**
- * XARVIS AI — SERVER v4.2
+ * XARVIS AI — SERVER v4.3
  *
- * Changes from v4.1:
- * - Added Viral Clip Finder pipeline (Phase 1: analysis only, no export)
- *   Upload -> extract audio (ffmpeg) -> transcribe (Groq Whisper) ->
- *   analyze (Claude) -> structured JSON -> poll for result
- * - New deps: multer, fluent-ffmpeg, @ffmpeg-installer/ffmpeg, @anthropic-ai/sdk
- * - New in-memory job store (Map) — NOT persistent, Phase 1 only
- * - Everything from v4.1 is unchanged
+ * Changes from v4.2:
+ * - REMOVED Anthropic/Claude entirely. Phase 1 clip analysis is Groq-only,
+ *   per requirement: no new AI providers, single LLM layer.
+ *   (This also fixes the Render crash: v4.2 hard-exited on missing
+ *   ANTHROPIC_API_KEY, which was never supposed to be set.)
+ * - Clip analysis now chunks the transcript (~5 min windows) and runs
+ *   the chunked "MAX 3 clips per chunk" prompt against Groq per chunk,
+ *   then merges/dedupes/ranks results. This scales to long videos
+ *   without blowing a single-call context/output budget.
+ * - Per-chunk failures are caught and skipped (logged), not fatal —
+ *   the job only errors out if the whole transcript yields nothing.
+ * - Everything else from v4.2 (chat/generate/agent routes, upload/job
+ *   store, ffmpeg extraction, Whisper transcription) is unchanged.
  */
 
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import Groq from "groq-sdk";
-import Anthropic from "@anthropic-ai/sdk";
 import multer from "multer";
 import ffmpeg from "fluent-ffmpeg";
 import ffmpegInstaller from "@ffmpeg-installer/ffmpeg";
@@ -42,16 +47,11 @@ app.use(cors({
 // ─────────────────────────────────────────────
 // STARTUP CHECKS
 // ─────────────────────────────────────────────
-console.log("🚀 Starting Xarvis AI Server v4.2...");
+console.log("🚀 Starting Xarvis AI Server v4.3...");
 console.log("✅ GROQ KEY EXISTS:", !!process.env.GROQ_API_KEY);
-console.log("✅ ANTHROPIC KEY EXISTS:", !!process.env.ANTHROPIC_API_KEY);
 
 if (!process.env.GROQ_API_KEY) {
   console.error("❌ FATAL: Missing GROQ_API_KEY in environment");
-  process.exit(1);
-}
-if (!process.env.ANTHROPIC_API_KEY) {
-  console.error("❌ FATAL: Missing ANTHROPIC_API_KEY in environment");
   process.exit(1);
 }
 
@@ -59,10 +59,12 @@ if (!process.env.ANTHROPIC_API_KEY) {
 // CLIENTS
 // ─────────────────────────────────────────────
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 const MODEL = "llama-3.3-70b-versatile";
-const CLAUDE_MODEL = "claude-sonnet-4-6"; // update if Anthropic ships a newer default
+
+// Single swap point for clip analysis — change this if you want to try a
+// different Groq model for the analysis stage without touching chat/generate.
+const ANALYSIS_MODEL = process.env.CLIP_ANALYSIS_MODEL || MODEL;
 
 // ─────────────────────────────────────────────
 // SYSTEM PROMPT (existing chat/generate tools — unchanged)
@@ -198,58 +200,76 @@ Build a complete, numbered execution roadmap:
 Be extremely specific. No fluff. This is their blueprint.`;
   },
 
-  // ── NEW: clip analysis prompt ──
-  clipAnalysis({ transcript }) {
-    return `You are an expert YouTube Shorts, TikTok, and Instagram Reels editor.
-Your job is to read a timestamped transcript from a long-form video and identify the BEST moments that should become short-form clips.
-
-Do NOT summarize the transcript. Think like a creator trying to get millions of views.
-Your goal is to find moments that immediately grab attention and keep people watching.
-
-Prioritize clips that contain one or more of these:
-- Strong hook
-- Controversial opinion
-- Emotional moment
-- Funny moment
-- Valuable lesson
-- Story payoff
-- Surprise
-- Argument or disagreement
-- Viral quote
-- Curiosity gap
-- High attention moment
-
-Avoid: introductions, sponsor reads, filler, repetition, low-energy conversation, long explanations with no payoff.
-
-Rules:
-- Start and end timestamps MUST be copied exactly from the transcript's timestamp markers — never estimate or interpolate.
-- Clips must be between 15 and 90 seconds unless a moment genuinely requires more time — justify any exception in the reason field.
-- If two candidate clips overlap by more than 50% or hinge on the same core moment, keep only the strongest one.
-- Return up to 10 clips. If fewer than 10 moments meet a real quality bar, return fewer — do not pad with weak clips.
-- "attention_score" (1-100) reflects attention-grabbing potential based on transcript signals, NOT a guarantee of virality.
-- "reason" must reference the specific line or moment, not generic commentary.
-
-Return ONLY valid JSON in this exact shape, nothing else — no markdown fences, no preamble:
-
+  // ── NEW: chunked clip analysis prompt (Groq-only) ──
+  clipAnalysisChunk({ chunk }) {
+    return `You are a world-class short-form video editor for YouTube Shorts, TikTok, and Instagram Reels.
+Your job is to analyze a timestamped transcript chunk from a long-form video and identify ONLY the most viral, high-retention moments.
+Do NOT summarize the content.
+Think like an editor trying to find moments that will get maximum watch time and engagement.
+---
+## INPUT
+You will receive a transcript with timestamps like:
+[00:01:12] text...
+[00:01:18] text...
+---
+## TASK
+Find the BEST clip-worthy moments inside this chunk.
+Only select moments that would make someone stop scrolling.
+Prioritize:
+- Strong hooks
+- Emotional spikes
+- Controversial opinions
+- Funny moments
+- Big realizations
+- Story twists
+- High tension or conflict
+- Unexpected facts
+- Relatable struggles
+- Viral quotes
+- Curiosity gaps
+---
+## DO NOT INCLUDE
+- intros
+- filler talk
+- greetings
+- explanations with no payoff
+- sponsor content
+- repeated ideas
+---
+## OUTPUT RULES
+Return ONLY JSON. No markdown fences, no preamble.
+Return MAX 3 clips for this chunk.
+Start/end timestamps MUST be copied exactly from the chunk's timestamp markers — never estimate or interpolate.
+If nothing in this chunk is strong enough, return an empty clips array.
+Each clip must include:
+- start_time
+- end_time
+- title (short, viral style)
+- hook (first 3 seconds)
+- reason (why it will perform)
+- viral_score (1–100)
+- confidence (1–100)
+---
+## OUTPUT FORMAT
 {
   "clips": [
     {
-      "rank": 1,
-      "title": "",
-      "start": "00:00:00",
-      "end": "00:00:00",
-      "category": "",
-      "reason": "",
-      "hook": "",
-      "attention_score": 0,
-      "confidence": 0
+      "start_time": "00:01:12",
+      "end_time": "00:01:45",
+      "title": "Most people quit too early",
+      "hook": "You're probably doing this wrong...",
+      "reason": "Strong emotional + relatable failure moment",
+      "viral_score": 92,
+      "confidence": 85
     }
   ]
 }
+---
+Be extremely selective. Only return moments worth turning into short-form content.
 
-Transcript:
+Transcript chunk:
 """
-${transcript}
+${chunk}
 """`;
   },
 };
@@ -288,6 +308,7 @@ async function streamGroq(messages, res, maxTokens = 1200) {
 // ─────────────────────────────────────────────
 const UPLOAD_DIR = path.join(os.tmpdir(), "xarvis-uploads");
 const MAX_UPLOAD_BYTES = 200 * 1024 * 1024; // 200MB cap for Phase 1
+const CHUNK_DURATION_SECONDS = 5 * 60; // ~5 min windows per analysis call
 
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
@@ -324,19 +345,24 @@ function extractAudio(videoPath, audioPath) {
       .audioBitrate("64k")
       .format("mp3")
       .on("end", resolve)
-      .on("error", reject)
+      .on("error", (err) => reject(new Error(`Audio extraction failed: ${err.message}`)))
       .save(audioPath);
   });
 }
 
 /** Transcribe audio with Groq's hosted Whisper, requesting word/segment-level timestamps. */
 async function transcribeAudio(audioPath) {
-  const transcription = await groq.audio.transcriptions.create({
-    file: fs.createReadStream(audioPath),
-    model: "whisper-large-v3",
-    response_format: "verbose_json",
-    temperature: 0,
-  });
+  let transcription;
+  try {
+    transcription = await groq.audio.transcriptions.create({
+      file: fs.createReadStream(audioPath),
+      model: "whisper-large-v3",
+      response_format: "verbose_json",
+      temperature: 0,
+    });
+  } catch (err) {
+    throw new Error(`Transcription failed: ${err.message}`);
+  }
 
   // verbose_json returns { text, segments: [{ start, end, text }, ...] }
   const segments = transcription.segments || [];
@@ -344,7 +370,7 @@ async function transcribeAudio(audioPath) {
     .map((s) => `[${formatTimestamp(s.start)} - ${formatTimestamp(s.end)}] ${s.text.trim()}`)
     .join("\n");
 
-  return formatted || transcription.text || "";
+  return { formatted: formatted || transcription.text || "", segments };
 }
 
 function formatTimestamp(seconds) {
@@ -354,29 +380,108 @@ function formatTimestamp(seconds) {
   return [h, m, s].map((v) => String(v).padStart(2, "0")).join(":");
 }
 
-/** Send the timestamped transcript to Claude and parse structured clip JSON. */
-async function analyzeTranscript(transcript) {
-  const message = await anthropic.messages.create({
-    model: CLAUDE_MODEL,
-    max_tokens: 4000,
-    messages: [{ role: "user", content: PROMPTS.clipAnalysis({ transcript }) }],
-  });
+function timestampToSeconds(ts) {
+  if (!ts || typeof ts !== "string") return null;
+  const parts = ts.split(":").map((v) => parseInt(v, 10));
+  if (parts.some((v) => Number.isNaN(v))) return null;
+  while (parts.length < 3) parts.unshift(0);
+  const [h, m, s] = parts;
+  return h * 3600 + m * 60 + s;
+}
 
-  const raw = message.content?.[0]?.text || "";
-  const cleaned = raw.replace(/```json|```/g, "").trim();
+/**
+ * Splits formatted transcript lines ("[start - end] text") into ~5 minute
+ * chunks based on segment start time, so each Groq call stays well within
+ * context/output limits regardless of video length.
+ */
+function chunkTranscript(segments) {
+  const chunks = [];
+  let current = [];
+  let windowStart = 0;
 
-  let parsed;
+  for (const seg of segments) {
+    if (seg.start - windowStart >= CHUNK_DURATION_SECONDS && current.length) {
+      chunks.push(current.join("\n"));
+      current = [];
+      windowStart = seg.start;
+    }
+    current.push(`[${formatTimestamp(seg.start)} - ${formatTimestamp(seg.end)}] ${seg.text.trim()}`);
+  }
+  if (current.length) chunks.push(current.join("\n"));
+
+  return chunks;
+}
+
+/** Run one chunk through Groq and parse its clip JSON. Returns [] on any failure (logged, non-fatal). */
+async function analyzeTranscriptChunk(chunk, chunkIndex) {
   try {
-    parsed = JSON.parse(cleaned);
-  } catch (e) {
-    throw new Error("Claude returned non-JSON output — could not parse clip results.");
+    const completion = await groq.chat.completions.create({
+      model: ANALYSIS_MODEL,
+      messages: [{ role: "user", content: PROMPTS.clipAnalysisChunk({ chunk }) }],
+      temperature: 0.4,
+      max_tokens: 1200,
+    });
+
+    const raw = completion?.choices?.[0]?.message?.content || "";
+    const cleaned = raw.replace(/```json|```/g, "").trim();
+
+    const parsed = JSON.parse(cleaned);
+    if (!parsed.clips || !Array.isArray(parsed.clips)) return [];
+
+    return parsed.clips;
+  } catch (err) {
+    console.error(`⚠️ Chunk ${chunkIndex} analysis failed (skipping):`, err.message);
+    return [];
+  }
+}
+
+/**
+ * Runs chunked analysis across the whole transcript, normalizes field names
+ * to the app-wide clip shape, drops heavily-overlapping lower-score clips,
+ * and returns the top 10 ranked by score.
+ */
+async function analyzeTranscript(segments) {
+  const chunks = chunkTranscript(segments);
+  if (!chunks.length) return [];
+
+  const results = [];
+  for (let i = 0; i < chunks.length; i++) {
+    const clips = await analyzeTranscriptChunk(chunks[i], i);
+    results.push(...clips);
   }
 
-  if (!parsed.clips || !Array.isArray(parsed.clips)) {
-    throw new Error("Claude response missing a valid 'clips' array.");
+  const normalized = results
+    .map((c) => ({
+      title: c.title || "Untitled clip",
+      start: c.start_time || c.start,
+      end: c.end_time || c.end,
+      hook: c.hook || "",
+      reason: c.reason || "",
+      attention_score: Number(c.viral_score ?? c.attention_score ?? 0),
+      confidence: Number(c.confidence ?? 0),
+    }))
+    .filter((c) => c.start && c.end)
+    .sort((a, b) => b.attention_score - a.attention_score);
+
+  const accepted = [];
+  for (const clip of normalized) {
+    const start = timestampToSeconds(clip.start);
+    const end = timestampToSeconds(clip.end);
+    if (start === null || end === null || end <= start) continue;
+
+    const overlapsExisting = accepted.some((existing) => {
+      const exStart = timestampToSeconds(existing.start);
+      const exEnd = timestampToSeconds(existing.end);
+      const overlap = Math.max(0, Math.min(end, exEnd) - Math.max(start, exStart));
+      const shorterLen = Math.min(end - start, exEnd - exStart);
+      return shorterLen > 0 && overlap / shorterLen > 0.5;
+    });
+
+    if (!overlapsExisting) accepted.push(clip);
+    if (accepted.length >= 10) break;
   }
 
-  return parsed.clips;
+  return accepted.map((c, i) => ({ rank: i + 1, ...c }));
 }
 
 /** Runs the full pipeline in the background; updates the job record as it goes. */
@@ -388,20 +493,20 @@ async function runClipPipeline(job, videoPath) {
     await extractAudio(videoPath, audioPath);
 
     job.stage = "transcribing";
-    const transcript = await transcribeAudio(audioPath);
+    const { formatted, segments } = await transcribeAudio(audioPath);
 
-    if (!transcript.trim()) {
+    if (!formatted.trim() || !segments.length) {
       throw new Error("Transcription returned no speech content.");
     }
 
     job.stage = "analyzing";
-    const clips = await analyzeTranscript(transcript);
+    const clips = await analyzeTranscript(segments);
 
     job.clips = clips;
     job.status = "done";
     job.stage = "done";
   } catch (err) {
-    console.error(`❌ Clip pipeline failed [${job.id}]:`, err.message);
+    console.error(`❌ Clip pipeline failed [${job.id}] at stage "${job.stage}":`, err.message);
     job.status = "error";
     job.error = err.message;
   } finally {
@@ -434,7 +539,7 @@ await testGroq();
 // ROUTES — HEALTH
 // ─────────────────────────────────────────────
 app.get("/", (req, res) => {
-  res.json({ status: "online", message: "🚀 Xarvis AI v4.2" });
+  res.json({ status: "online", message: "🚀 Xarvis AI v4.3" });
 });
 
 app.get("/api/health", (req, res) => {
@@ -531,7 +636,7 @@ app.post("/api/agent/plan", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// ROUTES — VIRAL CLIP FINDER (NEW, Phase 1)
+// ROUTES — VIRAL CLIP FINDER (Groq-only, Phase 1)
 // ─────────────────────────────────────────────
 
 /**
@@ -610,6 +715,6 @@ app.use((err, req, res, next) => {
 // ─────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-  console.log(`🚀 Xarvis AI v4.2 running on port ${PORT}`);
+  console.log(`🚀 Xarvis AI v4.3 running on port ${PORT}`);
   console.log(`   Health: http://localhost:${PORT}/api/health`);
 });
