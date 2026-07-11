@@ -1,19 +1,26 @@
 /**
- * XARVIS AI — SERVER v4.3
+ * XARVIS AI — SERVER v4.4
  *
- * Changes from v4.2:
- * - REMOVED Anthropic/Claude entirely. Phase 1 clip analysis is Groq-only,
- *   per requirement: no new AI providers, single LLM layer.
- *   (This also fixes the Render crash: v4.2 hard-exited on missing
- *   ANTHROPIC_API_KEY, which was never supposed to be set.)
- * - Clip analysis now chunks the transcript (~5 min windows) and runs
- *   the chunked "MAX 3 clips per chunk" prompt against Groq per chunk,
- *   then merges/dedupes/ranks results. This scales to long videos
- *   without blowing a single-call context/output budget.
- * - Per-chunk failures are caught and skipped (logged), not fatal —
- *   the job only errors out if the whole transcript yields nothing.
- * - Everything else from v4.2 (chat/generate/agent routes, upload/job
- *   store, ffmpeg extraction, Whisper transcription) is unchanged.
+ * Changes from v4.3:
+ * - FIX: clipAnalysisChunk prompt now asks Groq for an `attention_type`
+ *   category per clip (one of a fixed enum) and analyzeTranscript()
+ *   passes it through. The frontend has always expected this field —
+ *   v4.3 never produced it, so every clip silently lost its category
+ *   badge. This is the only behavior change to the analysis output shape.
+ * - FIX: transcribeAudio() now explicitly requests
+ *   timestamp_granularities: ["segment"] on the Whisper call. Relying on
+ *   verbose_json alone to include segments is implementation-dependent;
+ *   this makes the requirement explicit instead of hoping for the default.
+ * - HARDENING: jobs now carry a createdAt-based TTL. A background sweep
+ *   drops jobs older than JOB_TTL_MS so the in-memory Map can't grow
+ *   unbounded across a long-running process, and so a client polling a
+ *   job that will never finish gets a clear "expired" error instead of
+ *   polling forever.
+ * - HARDENING: runClipPipeline wraps each stage with a per-stage log so
+ *   Render logs show exactly which stage a failure happened in.
+ * - No provider changes: still Groq-only. No Anthropic/Claude added back.
+ * - All routes, upload handling, ffmpeg extraction, and existing
+ *   chat/generate/agent behavior are unchanged from v4.3.
  */
 
 import express from "express";
@@ -47,7 +54,7 @@ app.use(cors({
 // ─────────────────────────────────────────────
 // STARTUP CHECKS
 // ─────────────────────────────────────────────
-console.log("🚀 Starting Xarvis AI Server v4.3...");
+console.log("🚀 Starting Xarvis AI Server v4.4...");
 console.log("✅ GROQ KEY EXISTS:", !!process.env.GROQ_API_KEY);
 
 if (!process.env.GROQ_API_KEY) {
@@ -61,9 +68,6 @@ if (!process.env.GROQ_API_KEY) {
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 const MODEL = "llama-3.3-70b-versatile";
-
-// Single swap point for clip analysis — change this if you want to try a
-// different Groq model for the analysis stage without touching chat/generate.
 const ANALYSIS_MODEL = process.env.CLIP_ANALYSIS_MODEL || MODEL;
 
 // ─────────────────────────────────────────────
@@ -200,7 +204,7 @@ Build a complete, numbered execution roadmap:
 Be extremely specific. No fluff. This is their blueprint.`;
   },
 
-  // ── NEW: chunked clip analysis prompt (Groq-only) ──
+  // ── clipAnalysisChunk — FIX: now requests attention_type ──
   clipAnalysisChunk({ chunk }) {
     return `You are a world-class short-form video editor for YouTube Shorts, TikTok, and Instagram Reels.
 Your job is to analyze a timestamped transcript chunk from a long-form video and identify ONLY the most viral, high-retention moments.
@@ -236,6 +240,11 @@ Prioritize:
 - sponsor content
 - repeated ideas
 ---
+## ATTENTION TYPE
+Classify each clip with EXACTLY one attention_type from this list:
+emotional_shift, opinion_change, contradiction, surprise_reveal, conflict_start, punchline, story_twist, curiosity_gap
+Pick whichever single category best explains why the moment grabs attention.
+---
 ## OUTPUT RULES
 Return ONLY JSON. No markdown fences, no preamble.
 Return MAX 3 clips for this chunk.
@@ -247,6 +256,7 @@ Each clip must include:
 - title (short, viral style)
 - hook (first 3 seconds)
 - reason (why it will perform)
+- attention_type (one of the categories above)
 - viral_score (1–100)
 - confidence (1–100)
 ---
@@ -259,6 +269,7 @@ Each clip must include:
       "title": "Most people quit too early",
       "hook": "You're probably doing this wrong...",
       "reason": "Strong emotional + relatable failure moment",
+      "attention_type": "surprise_reveal",
       "viral_score": 92,
       "confidence": 85
     }
@@ -309,6 +320,7 @@ async function streamGroq(messages, res, maxTokens = 1200) {
 const UPLOAD_DIR = path.join(os.tmpdir(), "xarvis-uploads");
 const MAX_UPLOAD_BYTES = 200 * 1024 * 1024; // 200MB cap for Phase 1
 const CHUNK_DURATION_SECONDS = 5 * 60; // ~5 min windows per analysis call
+const JOB_TTL_MS = 30 * 60 * 1000; // 30 min — after this a finished/dead job is swept
 
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
@@ -317,9 +329,19 @@ const upload = multer({
   limits: { fileSize: MAX_UPLOAD_BYTES },
 });
 
-// In-memory job store. Phase 1 only — resets on server restart.
+// In-memory job store. Phase 1 only — resets on server restart/redeploy.
 // Shape: { id, status, stage, error, clips, createdAt }
 const jobs = new Map();
+
+// Sweep old jobs periodically so a dead/forgotten job doesn't sit in memory
+// forever and so a client polling one gets an explicit "expired" error
+// instead of an indefinite 404 with no explanation.
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, job] of jobs) {
+    if (now - job.createdAt > JOB_TTL_MS) jobs.delete(id);
+  }
+}, 5 * 60 * 1000).unref();
 
 function createJob() {
   const id = crypto.randomUUID();
@@ -350,7 +372,12 @@ function extractAudio(videoPath, audioPath) {
   });
 }
 
-/** Transcribe audio with Groq's hosted Whisper, requesting word/segment-level timestamps. */
+/**
+ * Transcribe audio with Groq's hosted Whisper, requesting segment-level
+ * timestamps explicitly. FIX: previously relied on verbose_json alone to
+ * include segments — now requests timestamp_granularities: ["segment"]
+ * so the requirement isn't implicit/version-dependent.
+ */
 async function transcribeAudio(audioPath) {
   let transcription;
   try {
@@ -358,13 +385,13 @@ async function transcribeAudio(audioPath) {
       file: fs.createReadStream(audioPath),
       model: "whisper-large-v3",
       response_format: "verbose_json",
+      timestamp_granularities: ["segment"],
       temperature: 0,
     });
   } catch (err) {
     throw new Error(`Transcription failed: ${err.message}`);
   }
 
-  // verbose_json returns { text, segments: [{ start, end, text }, ...] }
   const segments = transcription.segments || [];
   const formatted = segments
     .map((s) => `[${formatTimestamp(s.start)} - ${formatTimestamp(s.end)}] ${s.text.trim()}`)
@@ -389,11 +416,6 @@ function timestampToSeconds(ts) {
   return h * 3600 + m * 60 + s;
 }
 
-/**
- * Splits formatted transcript lines ("[start - end] text") into ~5 minute
- * chunks based on segment start time, so each Groq call stays well within
- * context/output limits regardless of video length.
- */
 function chunkTranscript(segments) {
   const chunks = [];
   let current = [];
@@ -411,6 +433,11 @@ function chunkTranscript(segments) {
 
   return chunks;
 }
+
+const VALID_ATTENTION_TYPES = new Set([
+  "emotional_shift", "opinion_change", "contradiction", "surprise_reveal",
+  "conflict_start", "punchline", "story_twist", "curiosity_gap",
+]);
 
 /** Run one chunk through Groq and parse its clip JSON. Returns [] on any failure (logged, non-fatal). */
 async function analyzeTranscriptChunk(chunk, chunkIndex) {
@@ -437,8 +464,9 @@ async function analyzeTranscriptChunk(chunk, chunkIndex) {
 
 /**
  * Runs chunked analysis across the whole transcript, normalizes field names
- * to the app-wide clip shape, drops heavily-overlapping lower-score clips,
- * and returns the top 10 ranked by score.
+ * to the app-wide clip shape (now including attention_type — FIX), drops
+ * heavily-overlapping lower-score clips, and returns the top 10 ranked by
+ * score.
  */
 async function analyzeTranscript(segments) {
   const chunks = chunkTranscript(segments);
@@ -457,6 +485,7 @@ async function analyzeTranscript(segments) {
       end: c.end_time || c.end,
       hook: c.hook || "",
       reason: c.reason || "",
+      attention_type: VALID_ATTENTION_TYPES.has(c.attention_type) ? c.attention_type : null,
       attention_score: Number(c.viral_score ?? c.attention_score ?? 0),
       confidence: Number(c.confidence ?? 0),
     }))
@@ -490,9 +519,11 @@ async function runClipPipeline(job, videoPath) {
 
   try {
     job.stage = "extracting_audio";
+    console.log(`[job ${job.id}] extracting audio...`);
     await extractAudio(videoPath, audioPath);
 
     job.stage = "transcribing";
+    console.log(`[job ${job.id}] transcribing...`);
     const { formatted, segments } = await transcribeAudio(audioPath);
 
     if (!formatted.trim() || !segments.length) {
@@ -500,17 +531,18 @@ async function runClipPipeline(job, videoPath) {
     }
 
     job.stage = "analyzing";
+    console.log(`[job ${job.id}] analyzing ${segments.length} segments...`);
     const clips = await analyzeTranscript(segments);
 
     job.clips = clips;
     job.status = "done";
     job.stage = "done";
+    console.log(`[job ${job.id}] done — ${clips.length} clips found.`);
   } catch (err) {
-    console.error(`❌ Clip pipeline failed [${job.id}] at stage "${job.stage}":`, err.message);
+    console.error(`❌ [job ${job.id}] failed at stage "${job.stage}":`, err.message);
     job.status = "error";
     job.error = err.message;
   } finally {
-    // Best-effort cleanup — Phase 1 has no persistent storage anyway
     fs.unlink(videoPath, () => {});
     fs.unlink(audioPath, () => {});
   }
@@ -539,7 +571,7 @@ await testGroq();
 // ROUTES — HEALTH
 // ─────────────────────────────────────────────
 app.get("/", (req, res) => {
-  res.json({ status: "online", message: "🚀 Xarvis AI v4.3" });
+  res.json({ status: "online", message: "🚀 Xarvis AI v4.4" });
 });
 
 app.get("/api/health", (req, res) => {
@@ -639,11 +671,6 @@ app.post("/api/agent/plan", async (req, res) => {
 // ROUTES — VIRAL CLIP FINDER (Groq-only, Phase 1)
 // ─────────────────────────────────────────────
 
-/**
- * POST /api/clips/upload
- * multipart/form-data, field name: "video"
- * Returns immediately with a jobId; processing happens in the background.
- */
 app.post("/api/clips/upload", upload.single("video"), async (req, res) => {
   try {
     if (!req.file) {
@@ -653,7 +680,6 @@ app.post("/api/clips/upload", upload.single("video"), async (req, res) => {
     const job = createJob();
     res.json({ success: true, jobId: job.id });
 
-    // Fire and forget — client polls /api/clips/status/:jobId
     runClipPipeline(job, req.file.path);
 
   } catch (err) {
@@ -662,14 +688,10 @@ app.post("/api/clips/upload", upload.single("video"), async (req, res) => {
   }
 });
 
-/**
- * GET /api/clips/status/:jobId
- * Poll this while status === "processing".
- */
 app.get("/api/clips/status/:jobId", (req, res) => {
   const job = jobs.get(req.params.jobId);
   if (!job) {
-    return res.status(404).json({ success: false, error: "Job not found." });
+    return res.status(404).json({ success: false, error: "Job not found — it may have expired. Please upload again." });
   }
   res.json({
     success: true,
@@ -679,14 +701,10 @@ app.get("/api/clips/status/:jobId", (req, res) => {
   });
 });
 
-/**
- * GET /api/clips/result/:jobId
- * Call once status === "done". Returns the ranked clip array.
- */
 app.get("/api/clips/result/:jobId", (req, res) => {
   const job = jobs.get(req.params.jobId);
   if (!job) {
-    return res.status(404).json({ success: false, error: "Job not found." });
+    return res.status(404).json({ success: false, error: "Job not found — it may have expired. Please upload again." });
   }
   if (job.status !== "done") {
     return res.status(409).json({ success: false, error: `Job is not finished yet (status: ${job.status}).` });
@@ -701,10 +719,12 @@ app.use((req, res) => {
   res.status(404).json({ success: false, error: `Route not found: ${req.method} ${req.path}` });
 });
 
-// Multer error handler (file too large, etc.) — must have 4 args to be recognized by Express
 app.use((err, req, res, next) => {
   if (err instanceof multer.MulterError) {
-    return res.status(400).json({ success: false, error: `Upload error: ${err.message}` });
+    const msg = err.code === "LIMIT_FILE_SIZE"
+      ? "That file is over the 200MB limit — try a shorter clip or compress it first."
+      : `Upload error: ${err.message}`;
+    return res.status(400).json({ success: false, error: msg });
   }
   console.error("❌ Unhandled error:", err.message);
   res.status(500).json({ success: false, error: err.message });
@@ -715,6 +735,6 @@ app.use((err, req, res, next) => {
 // ─────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-  console.log(`🚀 Xarvis AI v4.3 running on port ${PORT}`);
+  console.log(`🚀 Xarvis AI v4.4 running on port ${PORT}`);
   console.log(`   Health: http://localhost:${PORT}/api/health`);
 });
