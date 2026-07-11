@@ -947,6 +947,30 @@
       background: rgba(255,255,255,.08); padding: 2px 7px; border-radius: 100px;
       margin-left: 2px;
     }
+    .vcf-yt-input-row {
+      display: flex; align-items: center; gap: 10px;
+      background: rgba(5,4,10,.5); border: 1px solid var(--glass-bdh);
+      border-radius: 100px; padding: 14px 20px;
+      transition: border-color .2s, box-shadow .2s;
+    }
+    .vcf-yt-input-row:focus-within {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(148,102,255,.1);
+    }
+    .vcf-yt-input-icon { color: var(--accent-hi); font-size: 14px; flex-shrink: 0; }
+    .vcf-yt-input-row input {
+      flex: 1; background: none; border: none; outline: none;
+      color: var(--t0); font-size: 14.5px; font-family: var(--font-mono);
+    }
+    .vcf-yt-input-row input::placeholder { color: var(--t3); font-family: var(--font-body); }
+    .vcf-yt-input-row.valid { border-color: rgba(52,211,153,.5); }
+    .vcf-yt-input-row.invalid { border-color: rgba(220,38,38,.4); }
+    .vcf-yt-hint {
+      font-size: 12px; color: var(--t3); margin-top: 10px; text-align: center;
+      font-family: var(--font-mono);
+    }
+    .vcf-yt-hint.valid { color: #68d391; }
+    .vcf-yt-hint.invalid { color: #fca5a5; }
 
     .vcf-upload-card {
       background: linear-gradient(180deg, rgba(148,102,255,.05), rgba(13,11,24,.6));
@@ -1594,10 +1618,7 @@
 
           <div class="vcf-source-tabs">
             <button class="vcf-tab active" id="vcf-tab-upload" onclick="vcfSelectTab('upload')">⤒ Upload video</button>
-            <button class="vcf-tab vcf-tab-disabled" id="vcf-tab-youtube" disabled
-              title="YouTube link ingestion isn't built yet">▶ Paste YouTube link
-              <span class="vcf-soon-pill">Coming soon</span>
-            </button>
+            <button class="vcf-tab" id="vcf-tab-youtube" onclick="vcfSelectTab('youtube')">▶ Paste YouTube link</button>
           </div>
 
           <div class="vcf-upload-card" id="vcf-upload-card">
@@ -1618,6 +1639,14 @@
                 </div>
                 <button class="vcf-preview-remove" id="vcf-preview-remove" title="Remove">✕</button>
               </div>
+            </div>
+
+            <div id="vcf-panel-youtube" style="display:none">
+              <div class="vcf-yt-input-row">
+                <span class="vcf-yt-input-icon">▶</span>
+                <input class="field" id="vcf-youtube-input" placeholder="https://youtube.com/watch?v=…" oninput="vcfYoutubeInputChanged()" onpaste="setTimeout(vcfYoutubeInputChanged, 0)" />
+              </div>
+              <div class="vcf-yt-hint" id="vcf-yt-hint">Paste a public YouTube link — videos up to 2 hours long.</div>
             </div>
 
             <div class="vcf-meta-row">
@@ -2182,15 +2211,25 @@ function aiAssist(type) {
    before the first real submission.
 ══════════════════════════════════════════════ */
 var VCF = {
+  activeTab: 'upload',
   file: null,
+  youtubeUrl: '',
   jobId: null,
   pollTimer: null,
   pollAttempts: 0,
-  MAX_POLL_ATTEMPTS: 200, // ~10 min at 3s/poll — long videos can legitimately take a while
+  MAX_POLL_ATTEMPTS: 240, // ~12 min at 3s/poll — a YouTube download + long video can legitimately take a while
   stageOrder: ['extracting_audio', 'transcribing', 'analyzing']
 };
 
+// Mirrors YOUTUBE_URL_PATTERN in server.js — kept in sync so the button
+// only ever enables for a link the backend will actually accept.
+var YOUTUBE_URL_PATTERN = /^(https?:\/\/)?(www\.)?(youtube\.com\/(watch\?v=|shorts\/|live\/)|youtu\.be\/)[\w-]{6,}/i;
+
+var VCF_UPLOAD_STAGES = ['extracting_audio', 'transcribing', 'analyzing'];
+var VCF_YOUTUBE_STAGES = ['retrieving_video', 'extracting_audio', 'transcribing', 'analyzing'];
+
 var VCF_STAGE_LABELS = {
+  retrieving_video: 'Retrieving video from YouTube',
   extracting_audio: 'Extracting audio',
   transcribing: 'Transcribing with Whisper',
   analyzing: 'Finding viral moments'
@@ -2218,12 +2257,45 @@ var VCF_DEMO_CLIPS = [
     attention_score: 83, confidence: 88 },
 ];
 
-// The YouTube tab is permanently disabled in markup (no ingestion backend
-// exists yet), so this only ever runs for 'upload' — kept as a function in
-// case YouTube support gets built later.
 function vcfSelectTab(tab) {
-  if (tab !== 'upload') return;
-  document.getElementById('vcf-submit-btn').disabled = !VCF.file;
+  VCF.activeTab = tab;
+  document.getElementById('vcf-tab-upload').classList.toggle('active', tab === 'upload');
+  document.getElementById('vcf-tab-youtube').classList.toggle('active', tab === 'youtube');
+  document.getElementById('vcf-panel-upload').style.display = tab === 'upload' ? '' : 'none';
+  document.getElementById('vcf-panel-youtube').style.display = tab === 'youtube' ? '' : 'none';
+  vcfRefreshSubmitState();
+}
+
+function vcfRefreshSubmitState() {
+  var btn = document.getElementById('vcf-submit-btn');
+  if (VCF.activeTab === 'youtube') {
+    btn.disabled = !YOUTUBE_URL_PATTERN.test(VCF.youtubeUrl.trim());
+  } else {
+    btn.disabled = !VCF.file;
+  }
+}
+
+function vcfYoutubeInputChanged() {
+  var input = document.getElementById('vcf-youtube-input');
+  var row = input.parentElement;
+  var hint = document.getElementById('vcf-yt-hint');
+  VCF.youtubeUrl = input.value;
+  row.classList.remove('valid', 'invalid');
+  hint.classList.remove('valid', 'invalid');
+
+  var val = VCF.youtubeUrl.trim();
+  if (!val) {
+    hint.textContent = 'Paste a public YouTube link — videos up to 2 hours long.';
+  } else if (YOUTUBE_URL_PATTERN.test(val)) {
+    row.classList.add('valid');
+    hint.classList.add('valid');
+    hint.textContent = '✓ Looks like a valid YouTube link.';
+  } else {
+    row.classList.add('invalid');
+    hint.classList.add('invalid');
+    hint.textContent = 'That doesn\u2019t look like a YouTube URL yet — paste the full link (youtube.com/watch?v=… or youtu.be/…).';
+  }
+  vcfRefreshSubmitState();
 }
 
 function vcfFileChosen(input) {
