@@ -937,6 +937,16 @@
       color: var(--accent-hi);
       background: rgba(148,102,255,.10);
     }
+    .vcf-tab-disabled {
+      opacity: .45;
+      cursor: not-allowed;
+    }
+    .vcf-tab-disabled:hover { color: var(--t2); }
+    .vcf-soon-pill {
+      font-family: var(--font-mono); font-size: 9px;
+      background: rgba(255,255,255,.08); padding: 2px 7px; border-radius: 100px;
+      margin-left: 2px;
+    }
 
     .vcf-upload-card {
       background: linear-gradient(180deg, rgba(148,102,255,.05), rgba(13,11,24,.6));
@@ -1584,7 +1594,10 @@
 
           <div class="vcf-source-tabs">
             <button class="vcf-tab active" id="vcf-tab-upload" onclick="vcfSelectTab('upload')">⤒ Upload video</button>
-            <button class="vcf-tab" id="vcf-tab-youtube" onclick="vcfSelectTab('youtube')">▶ Paste YouTube link</button>
+            <button class="vcf-tab vcf-tab-disabled" id="vcf-tab-youtube" disabled
+              title="YouTube link ingestion isn't built yet">▶ Paste YouTube link
+              <span class="vcf-soon-pill">Coming soon</span>
+            </button>
           </div>
 
           <div class="vcf-upload-card" id="vcf-upload-card">
@@ -1605,13 +1618,6 @@
                 </div>
                 <button class="vcf-preview-remove" id="vcf-preview-remove" title="Remove">✕</button>
               </div>
-            </div>
-
-            <div id="vcf-panel-youtube" style="display:none">
-              <div class="vcf-source-tabs" style="margin:0">
-                <input class="field" id="vcf-youtube-input" placeholder="https://youtube.com/watch?v=…" style="text-align:left" />
-              </div>
-              <div class="vcf-soon-note">YouTube link ingestion isn't built yet — this is saved for reference, but analysis currently requires uploading the file directly.</div>
             </div>
 
             <div class="vcf-meta-row">
@@ -2212,13 +2218,12 @@ var VCF_DEMO_CLIPS = [
     attention_score: 83, confidence: 88 },
 ];
 
+// The YouTube tab is permanently disabled in markup (no ingestion backend
+// exists yet), so this only ever runs for 'upload' — kept as a function in
+// case YouTube support gets built later.
 function vcfSelectTab(tab) {
-  document.getElementById('vcf-tab-upload').classList.toggle('active', tab === 'upload');
-  document.getElementById('vcf-tab-youtube').classList.toggle('active', tab === 'youtube');
-  document.getElementById('vcf-panel-upload').style.display = tab === 'upload' ? '' : 'none';
-  document.getElementById('vcf-panel-youtube').style.display = tab === 'youtube' ? '' : 'none';
-  var submitBtn = document.getElementById('vcf-submit-btn');
-  submitBtn.disabled = tab === 'youtube' ? true : !VCF.file;
+  if (tab !== 'upload') return;
+  document.getElementById('vcf-submit-btn').disabled = !VCF.file;
 }
 
 function vcfFileChosen(input) {
@@ -2308,6 +2313,7 @@ function vcfSetStage(stage) {
 
 function vcfSubmit() {
   if (!VCF.file) { showToast('Choose a video file first.'); return; }
+  console.log('[VCF] submit → uploading', VCF.file.name, (VCF.file.size / 1024 / 1024).toFixed(1) + 'MB to', API_BASE + '/api/clips/upload');
   vcfClearError();
   vcfBuildStageTrack();
   document.getElementById('vcf-submit-btn').disabled = true;
@@ -2319,13 +2325,20 @@ function vcfSubmit() {
   fd.append('video', VCF.file);
 
   fetch(API_BASE + '/api/clips/upload', { method: 'POST', body: fd })
-    .then(function(r) { return r.json(); })
+    .then(function(r) {
+      console.log('[VCF] upload response status:', r.status);
+      return r.json().catch(function() {
+        throw new Error('Server returned a non-JSON response (HTTP ' + r.status + '). Check that the backend is deployed and reachable at ' + API_BASE + '.');
+      });
+    })
     .then(function(d) {
+      console.log('[VCF] upload response body:', d);
       if (!d.success) throw new Error(d.error || 'Upload failed.');
       VCF.jobId = d.jobId;
       vcfPoll();
     })
     .catch(function(err) {
+      console.error('[VCF] upload failed:', err);
       vcfShowError(err.message);
       document.getElementById('vcf-progress-card').style.display = 'none';
       document.getElementById('vcf-submit-btn').disabled = false;
@@ -2346,8 +2359,10 @@ function vcfPoll() {
   fetch(API_BASE + '/api/clips/status/' + VCF.jobId)
     .then(function(r) { return r.json(); })
     .then(function(d) {
+      console.log('[VCF] poll #' + VCF.pollAttempts + ':', d);
       if (!d.success) throw new Error(d.error || 'Status check failed.');
       if (d.status === 'error') {
+        console.error('[VCF] job failed server-side:', d.error);
         vcfShowError(d.error || 'Analysis failed.');
         document.getElementById('vcf-progress-card').style.display = 'none';
         document.getElementById('vcf-submit-btn').disabled = false;
@@ -2361,6 +2376,7 @@ function vcfPoll() {
       }
     })
     .catch(function(err) {
+      console.error('[VCF] poll failed:', err);
       vcfShowError(err.message);
       document.getElementById('vcf-progress-card').style.display = 'none';
       document.getElementById('vcf-submit-btn').disabled = false;
