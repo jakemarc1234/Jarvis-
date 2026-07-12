@@ -2301,6 +2301,11 @@ function vcfYoutubeInputChanged() {
 function vcfFileChosen(input) {
   var file = input.files && input.files[0];
   if (!file) return;
+  if (!file.type || file.type.indexOf('video/') !== 0) {
+    showToast('"' + file.name + '" isn\u2019t a video file — pick an MP4, MOV, or WEBM.');
+    input.value = '';
+    return;
+  }
   VCF.file = file;
   document.getElementById('vcf-dropzone').style.display = 'none';
   var row = document.getElementById('vcf-preview-row');
@@ -2309,7 +2314,7 @@ function vcfFileChosen(input) {
   video.src = URL.createObjectURL(file);
   document.getElementById('vcf-preview-name').textContent = file.name;
   document.getElementById('vcf-preview-info').textContent = (file.size / 1024 / 1024).toFixed(1) + ' MB';
-  document.getElementById('vcf-submit-btn').disabled = false;
+  vcfRefreshSubmitState();
 }
 
 function vcfRemoveFile() {
@@ -2317,7 +2322,7 @@ function vcfRemoveFile() {
   document.getElementById('vcf-file-input').value = '';
   document.getElementById('vcf-preview-row').classList.remove('active');
   document.getElementById('vcf-dropzone').style.display = '';
-  document.getElementById('vcf-submit-btn').disabled = true;
+  vcfRefreshSubmitState();
 }
 
 (function vcfWireDropzone() {
@@ -2384,14 +2389,57 @@ function vcfSetStage(stage) {
 }
 
 function vcfSubmit() {
+  var submitBtn = document.getElementById('vcf-submit-btn');
+
+  if (VCF.activeTab === 'youtube') {
+    var url = VCF.youtubeUrl.trim();
+    if (!YOUTUBE_URL_PATTERN.test(url)) { showToast('Paste a valid YouTube link first.'); return; }
+
+    console.log('[VCF] submit → YouTube URL:', url, 'to', API_BASE + '/api/clips/from-url');
+    VCF.stageOrder = VCF_YOUTUBE_STAGES;
+    vcfClearError();
+    vcfBuildStageTrack();
+    submitBtn.disabled = true;
+    document.getElementById('vcf-progress-card').style.display = '';
+    VCF.pollAttempts = 0;
+    vcfSetStage(VCF.stageOrder[0]);
+
+    fetch(API_BASE + '/api/clips/from-url', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: url })
+    })
+      .then(function(r) {
+        console.log('[VCF] from-url response status:', r.status);
+        return r.json().catch(function() {
+          throw new Error('Server returned a non-JSON response (HTTP ' + r.status + '). Check that the backend is deployed and reachable at ' + API_BASE + '.');
+        });
+      })
+      .then(function(d) {
+        console.log('[VCF] from-url response body:', d);
+        if (!d.success) throw new Error(d.error || 'Could not start processing that link.');
+        VCF.jobId = d.jobId;
+        vcfPoll();
+      })
+      .catch(function(err) {
+        console.error('[VCF] from-url failed:', err);
+        vcfShowError(err.message);
+        document.getElementById('vcf-progress-card').style.display = 'none';
+        submitBtn.disabled = false;
+      });
+    return;
+  }
+
+  // Upload tab
   if (!VCF.file) { showToast('Choose a video file first.'); return; }
   console.log('[VCF] submit → uploading', VCF.file.name, (VCF.file.size / 1024 / 1024).toFixed(1) + 'MB to', API_BASE + '/api/clips/upload');
+  VCF.stageOrder = VCF_UPLOAD_STAGES;
   vcfClearError();
   vcfBuildStageTrack();
-  document.getElementById('vcf-submit-btn').disabled = true;
+  submitBtn.disabled = true;
   document.getElementById('vcf-progress-card').style.display = '';
   VCF.pollAttempts = 0;
-  vcfSetStage('extracting_audio');
+  vcfSetStage(VCF.stageOrder[0]);
 
   var fd = new FormData();
   fd.append('video', VCF.file);
@@ -2413,7 +2461,7 @@ function vcfSubmit() {
       console.error('[VCF] upload failed:', err);
       vcfShowError(err.message);
       document.getElementById('vcf-progress-card').style.display = 'none';
-      document.getElementById('vcf-submit-btn').disabled = false;
+      submitBtn.disabled = false;
     });
 }
 
