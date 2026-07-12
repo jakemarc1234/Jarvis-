@@ -1,21 +1,21 @@
 /**
- * XARVIS AI — SERVER v4.5
+ * XARVIS AI — SERVER v4.6
  *
- * Changes from v4.4:
- * - NEW: full YouTube link ingestion. POST /api/clips/from-url accepts a
- *   YouTube URL, validates it, fetches metadata via yt-dlp to reject videos
- *   over MAX_YOUTUBE_DURATION_SECONDS before spending time on them, then
- *   downloads the video and feeds it into the SAME extract/transcribe/
- *   analyze pipeline the file-upload path already used — one pipeline,
- *   two entry points, no duplicated analysis logic.
- * - runClipPipeline now takes a `source` descriptor ({kind:'upload',...}
- *   or {kind:'youtube',...}) instead of a bare path, and has a new
- *   "retrieving_video" stage that only applies to the YouTube path.
- * - Still Groq-only for all analysis/transcription. yt-dlp is a download
- *   tool, not an AI provider — no Anthropic/Claude added.
- * - Everything else (chat/generate/agent routes, upload handling, ffmpeg
- *   extraction, chunked Groq analysis, attention_type classification,
- *   job TTL sweep) is unchanged from v4.4.
+ * Changes from v4.5:
+ * - FIX: yt-dlp failures only ever showed "Command failed with exit code 1:
+ *   <the command>" — the actual reason (YouTube's response) lives in
+ *   err.stderr, which was being discarded. extractYtDlpError() now pulls
+ *   the real stderr text.
+ * - FIX: added the android player-client + mobile user-agent workaround
+ *   (YTDLP_COMMON_OPTS) to both metadata and download calls. YouTube's
+ *   "Sign in to confirm you're not a bot" check disproportionately blocks
+ *   cloud-hosted IPs (Render, AWS, GCP) — this is the most common real
+ *   cause of yt-dlp failures on hosted servers, and the android client
+ *   skips the browser JS challenge that triggers it.
+ * - NEW: friendlyYoutubeError() maps known failure patterns (bot-check,
+ *   private/unavailable, age-restricted, removed) to specific, honest
+ *   user-facing messages instead of a generic "download failed."
+ * - Still Groq-only. yt-dlp is a download tool, not an AI provider.
  */
 
 import express from "express";
@@ -50,7 +50,7 @@ app.use(cors({
 // ─────────────────────────────────────────────
 // STARTUP CHECKS
 // ─────────────────────────────────────────────
-console.log("🚀 Starting Xarvis AI Server v4.5...");
+console.log("🚀 Starting Xarvis AI Server v4.6...");
 console.log("✅ GROQ KEY EXISTS:", !!process.env.GROQ_API_KEY);
 
 if (!process.env.GROQ_API_KEY) {
@@ -360,18 +360,46 @@ function createJob() {
 }
 
 /**
+ * yt-dlp-exec throws an error whose top-level .message is just
+ * "Command failed with exit code N: <the command that was run>" — the
+ * actual reason (YouTube's response, a bad URL, etc.) lives in .stderr.
+ * Without this, every failure looked identical and undebuggable.
+ */
+function extractYtDlpError(err) {
+  const stderr = (err && (err.stderr || err.shortMessage)) || "";
+  const cleaned = String(stderr)
+    .split("\n")
+    .filter((line) => line.trim() && !line.trim().startsWith("[debug]"))
+    .join(" ")
+    .trim();
+  return cleaned || err?.message || String(err);
+}
+
+// Common workaround for YouTube's bot-check ("Sign in to confirm you're not
+// a bot") which disproportionately hits cloud-hosted IPs like Render's —
+// the android player client skips the browser JS challenge entirely.
+const YTDLP_COMMON_OPTS = {
+  noWarnings: true,
+  noCheckCertificates: true,
+  extractorArgs: "youtube:player_client=android",
+  addHeader: ["referer:youtube.com", "user-agent:com.google.android.youtube/19.09.37 (Linux; U; Android 14) gzip"],
+};
+
+/**
  * Fetch metadata only (no download) so we can reject unreasonably long
  * videos before spending time/bandwidth on them.
  */
 async function fetchYoutubeMetadata(url) {
-  const info = await ytDlpExec(url, {
-    dumpSingleJson: true,
-    noWarnings: true,
-    noCheckCertificates: true,
-    preferFreeFormats: true,
-    skipDownload: true,
-  });
-  return info;
+  try {
+    return await ytDlpExec(url, {
+      ...YTDLP_COMMON_OPTS,
+      dumpSingleJson: true,
+      preferFreeFormats: true,
+      skipDownload: true,
+    });
+  } catch (err) {
+    throw new Error(extractYtDlpError(err));
+  }
 }
 
 /**
@@ -381,14 +409,17 @@ async function fetchYoutubeMetadata(url) {
  * audio from).
  */
 async function downloadYoutubeVideo(url, outputPath) {
-  await ytDlpExec(url, {
-    output: outputPath,
-    format: "worst[ext=mp4]/worst",
-    noPlaylist: true,
-    noWarnings: true,
-    noCheckCertificates: true,
-    maxFilesize: `${MAX_UPLOAD_BYTES}`,
-  });
+  try {
+    await ytDlpExec(url, {
+      ...YTDLP_COMMON_OPTS,
+      output: outputPath,
+      format: "worst[ext=mp4]/worst",
+      noPlaylist: true,
+      maxFilesize: `${MAX_UPLOAD_BYTES}`,
+    });
+  } catch (err) {
+    throw new Error(extractYtDlpError(err));
+  }
 }
 
 /** Extract audio from a video file to mono 16kHz mp3 (small + Whisper-friendly). */
@@ -561,6 +592,30 @@ async function analyzeTranscript(segments) {
  * paths converge on the same extract → transcribe → analyze pipeline so
  * there's a single analysis implementation to maintain.
  */
+/**
+ * Turns yt-dlp's raw stderr into an honest, specific message. YouTube's
+ * bot-check ("Sign in to confirm you're not a bot") is the single most
+ * common failure on cloud-hosted IPs (Render, AWS, GCP, etc.) — it isn't a
+ * bug in this app, it's YouTube rate-limiting the server's IP range, so the
+ * user needs to know that rather than see a raw exit code.
+ */
+function friendlyYoutubeError(rawMessage, action) {
+  const msg = String(rawMessage || "");
+  if (/sign in to confirm|not a bot|confirm you.?re not a bot/i.test(msg)) {
+    return `YouTube is blocking this server's connection with a bot-check (this happens on cloud-hosted servers, not because of anything wrong with the link). Please upload the video file directly instead — that path doesn't go through YouTube at all.`;
+  }
+  if (/private video|video unavailable/i.test(msg)) {
+    return `That video is private or unavailable. Double-check the link, or upload the file directly.`;
+  }
+  if (/age[- ]restrict/i.test(msg)) {
+    return `That video is age-restricted, which YouTube blocks server-side downloads for. Upload the file directly instead.`;
+  }
+  if (/copyright|removed/i.test(msg)) {
+    return `That video appears to have been removed or is unavailable. Double-check the link.`;
+  }
+  return `Could not ${action} (${msg.slice(0, 220)}). Double-check the link is public and correct, or upload the file directly.`;
+}
+
 async function runClipPipeline(job, source) {
   let videoPath = source.kind === "upload" ? source.videoPath : null;
   let audioPath = null;
@@ -571,7 +626,7 @@ async function runClipPipeline(job, source) {
       console.log(`[job ${job.id}] retrieving video from YouTube: ${source.url}`);
 
       const meta = await fetchYoutubeMetadata(source.url).catch((err) => {
-        throw new Error(`Could not read that YouTube video (${err.message.split("\n")[0]}). Double-check the link is public and correct.`);
+        throw new Error(friendlyYoutubeError(err.message, "read that video's info"));
       });
 
       if (meta?.duration && meta.duration > MAX_YOUTUBE_DURATION_SECONDS) {
@@ -580,7 +635,7 @@ async function runClipPipeline(job, source) {
 
       videoPath = path.join(UPLOAD_DIR, `${job.id}.mp4`);
       await downloadYoutubeVideo(source.url, videoPath).catch((err) => {
-        throw new Error(`Download failed: ${err.message.split("\n")[0]}`);
+        throw new Error(friendlyYoutubeError(err.message, "download that video"));
       });
 
       if (!fs.existsSync(videoPath) || fs.statSync(videoPath).size === 0) {
@@ -643,7 +698,7 @@ await testGroq();
 // ROUTES — HEALTH
 // ─────────────────────────────────────────────
 app.get("/", (req, res) => {
-  res.json({ status: "online", message: "🚀 Xarvis AI v4.5" });
+  res.json({ status: "online", message: "🚀 Xarvis AI v4.6" });
 });
 
 app.get("/api/health", (req, res) => {
@@ -825,6 +880,6 @@ app.use((err, req, res, next) => {
 // ─────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-  console.log(`🚀 Xarvis AI v4.5 running on port ${PORT}`);
+  console.log(`🚀 Xarvis AI v4.6 running on port ${PORT}`);
   console.log(`   Health: http://localhost:${PORT}/api/health`);
 });
