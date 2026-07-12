@@ -1,26 +1,21 @@
 /**
- * XARVIS AI — SERVER v4.4
+ * XARVIS AI — SERVER v4.5
  *
- * Changes from v4.3:
- * - FIX: clipAnalysisChunk prompt now asks Groq for an `attention_type`
- *   category per clip (one of a fixed enum) and analyzeTranscript()
- *   passes it through. The frontend has always expected this field —
- *   v4.3 never produced it, so every clip silently lost its category
- *   badge. This is the only behavior change to the analysis output shape.
- * - FIX: transcribeAudio() now explicitly requests
- *   timestamp_granularities: ["segment"] on the Whisper call. Relying on
- *   verbose_json alone to include segments is implementation-dependent;
- *   this makes the requirement explicit instead of hoping for the default.
- * - HARDENING: jobs now carry a createdAt-based TTL. A background sweep
- *   drops jobs older than JOB_TTL_MS so the in-memory Map can't grow
- *   unbounded across a long-running process, and so a client polling a
- *   job that will never finish gets a clear "expired" error instead of
- *   polling forever.
- * - HARDENING: runClipPipeline wraps each stage with a per-stage log so
- *   Render logs show exactly which stage a failure happened in.
- * - No provider changes: still Groq-only. No Anthropic/Claude added back.
- * - All routes, upload handling, ffmpeg extraction, and existing
- *   chat/generate/agent behavior are unchanged from v4.3.
+ * Changes from v4.4:
+ * - NEW: full YouTube link ingestion. POST /api/clips/from-url accepts a
+ *   YouTube URL, validates it, fetches metadata via yt-dlp to reject videos
+ *   over MAX_YOUTUBE_DURATION_SECONDS before spending time on them, then
+ *   downloads the video and feeds it into the SAME extract/transcribe/
+ *   analyze pipeline the file-upload path already used — one pipeline,
+ *   two entry points, no duplicated analysis logic.
+ * - runClipPipeline now takes a `source` descriptor ({kind:'upload',...}
+ *   or {kind:'youtube',...}) instead of a bare path, and has a new
+ *   "retrieving_video" stage that only applies to the YouTube path.
+ * - Still Groq-only for all analysis/transcription. yt-dlp is a download
+ *   tool, not an AI provider — no Anthropic/Claude added.
+ * - Everything else (chat/generate/agent routes, upload handling, ffmpeg
+ *   extraction, chunked Groq analysis, attention_type classification,
+ *   job TTL sweep) is unchanged from v4.4.
  */
 
 import express from "express";
@@ -30,6 +25,7 @@ import Groq from "groq-sdk";
 import multer from "multer";
 import ffmpeg from "fluent-ffmpeg";
 import ffmpegInstaller from "@ffmpeg-installer/ffmpeg";
+import ytDlpExec from "yt-dlp-exec";
 import fs from "fs";
 import path from "path";
 import os from "os";
@@ -54,7 +50,7 @@ app.use(cors({
 // ─────────────────────────────────────────────
 // STARTUP CHECKS
 // ─────────────────────────────────────────────
-console.log("🚀 Starting Xarvis AI Server v4.4...");
+console.log("🚀 Starting Xarvis AI Server v4.5...");
 console.log("✅ GROQ KEY EXISTS:", !!process.env.GROQ_API_KEY);
 
 if (!process.env.GROQ_API_KEY) {
@@ -322,6 +318,12 @@ const MAX_UPLOAD_BYTES = 200 * 1024 * 1024; // 200MB cap for Phase 1
 const CHUNK_DURATION_SECONDS = 5 * 60; // ~5 min windows per analysis call
 const JOB_TTL_MS = 30 * 60 * 1000; // 30 min — after this a finished/dead job is swept
 
+// YouTube ingestion caps — long/huge videos would make transcription +
+// chunked analysis take unreasonably long for Phase 1, so we cap duration
+// up front (checked against yt-dlp's own metadata, before downloading).
+const MAX_YOUTUBE_DURATION_SECONDS = 2 * 60 * 60; // 2 hours
+const YOUTUBE_URL_PATTERN = /^(https?:\/\/)?(www\.)?(youtube\.com\/(watch\?v=|shorts\/|live\/)|youtu\.be\/)[\w-]{6,}/i;
+
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 const upload = multer({
@@ -348,13 +350,45 @@ function createJob() {
   const job = {
     id,
     status: "processing", // processing | done | error
-    stage: "queued",      // queued | extracting_audio | transcribing | analyzing | done
+    stage: "queued",      // queued | retrieving_video | extracting_audio | transcribing | analyzing | done
     error: null,
     clips: null,
     createdAt: Date.now(),
   };
   jobs.set(id, job);
   return job;
+}
+
+/**
+ * Fetch metadata only (no download) so we can reject unreasonably long
+ * videos before spending time/bandwidth on them.
+ */
+async function fetchYoutubeMetadata(url) {
+  const info = await ytDlpExec(url, {
+    dumpSingleJson: true,
+    noWarnings: true,
+    noCheckCertificates: true,
+    preferFreeFormats: true,
+    skipDownload: true,
+  });
+  return info;
+}
+
+/**
+ * Downloads a YouTube video to disk via yt-dlp, capped to a resolution that
+ * keeps file size reasonable (audio is all that matters downstream, but we
+ * keep a low-res video stream too so ffmpeg has a normal container to pull
+ * audio from).
+ */
+async function downloadYoutubeVideo(url, outputPath) {
+  await ytDlpExec(url, {
+    output: outputPath,
+    format: "worst[ext=mp4]/worst",
+    noPlaylist: true,
+    noWarnings: true,
+    noCheckCertificates: true,
+    maxFilesize: `${MAX_UPLOAD_BYTES}`,
+  });
 }
 
 /** Extract audio from a video file to mono 16kHz mp3 (small + Whisper-friendly). */
@@ -367,7 +401,13 @@ function extractAudio(videoPath, audioPath) {
       .audioBitrate("64k")
       .format("mp3")
       .on("end", resolve)
-      .on("error", (err) => reject(new Error(`Audio extraction failed: ${err.message}`)))
+      .on("error", (err) => {
+        const raw = err.message || "";
+        const friendly = raw.includes("does not contain any stream") || raw.includes("Invalid data found")
+          ? "That file doesn't look like a playable video — it may be corrupted, or not actually a video file. Try a different file."
+          : `Audio extraction failed: ${raw}`;
+        reject(new Error(friendly));
+      })
       .save(audioPath);
   });
 }
@@ -513,11 +553,43 @@ async function analyzeTranscript(segments) {
   return accepted.map((c, i) => ({ rank: i + 1, ...c }));
 }
 
-/** Runs the full pipeline in the background; updates the job record as it goes. */
-async function runClipPipeline(job, videoPath) {
-  const audioPath = videoPath + ".mp3";
+/**
+ * Runs the full pipeline in the background; updates the job record as it
+ * goes. `source` is either { kind: 'upload', videoPath } for a local file
+ * already on disk (from multer), or { kind: 'youtube', url } — in which
+ * case this function downloads the video itself as the first stage. Both
+ * paths converge on the same extract → transcribe → analyze pipeline so
+ * there's a single analysis implementation to maintain.
+ */
+async function runClipPipeline(job, source) {
+  let videoPath = source.kind === "upload" ? source.videoPath : null;
+  let audioPath = null;
 
   try {
+    if (source.kind === "youtube") {
+      job.stage = "retrieving_video";
+      console.log(`[job ${job.id}] retrieving video from YouTube: ${source.url}`);
+
+      const meta = await fetchYoutubeMetadata(source.url).catch((err) => {
+        throw new Error(`Could not read that YouTube video (${err.message.split("\n")[0]}). Double-check the link is public and correct.`);
+      });
+
+      if (meta?.duration && meta.duration > MAX_YOUTUBE_DURATION_SECONDS) {
+        throw new Error(`That video is ${Math.round(meta.duration / 60)} minutes long — Phase 1 supports up to ${MAX_YOUTUBE_DURATION_SECONDS / 60} minutes. Try a shorter video or upload a trimmed file instead.`);
+      }
+
+      videoPath = path.join(UPLOAD_DIR, `${job.id}.mp4`);
+      await downloadYoutubeVideo(source.url, videoPath).catch((err) => {
+        throw new Error(`Download failed: ${err.message.split("\n")[0]}`);
+      });
+
+      if (!fs.existsSync(videoPath) || fs.statSync(videoPath).size === 0) {
+        throw new Error("Download completed but produced an empty file — the video may be age-restricted, private, or region-locked.");
+      }
+    }
+
+    audioPath = videoPath + ".mp3";
+
     job.stage = "extracting_audio";
     console.log(`[job ${job.id}] extracting audio...`);
     await extractAudio(videoPath, audioPath);
@@ -543,8 +615,8 @@ async function runClipPipeline(job, videoPath) {
     job.status = "error";
     job.error = err.message;
   } finally {
-    fs.unlink(videoPath, () => {});
-    fs.unlink(audioPath, () => {});
+    if (videoPath) fs.unlink(videoPath, () => {});
+    if (audioPath) fs.unlink(audioPath, () => {});
   }
 }
 
@@ -571,7 +643,7 @@ await testGroq();
 // ROUTES — HEALTH
 // ─────────────────────────────────────────────
 app.get("/", (req, res) => {
-  res.json({ status: "online", message: "🚀 Xarvis AI v4.4" });
+  res.json({ status: "online", message: "🚀 Xarvis AI v4.5" });
 });
 
 app.get("/api/health", (req, res) => {
@@ -680,10 +752,28 @@ app.post("/api/clips/upload", upload.single("video"), async (req, res) => {
     const job = createJob();
     res.json({ success: true, jobId: job.id });
 
-    runClipPipeline(job, req.file.path);
+    runClipPipeline(job, { kind: "upload", videoPath: req.file.path });
 
   } catch (err) {
     console.error("❌ /api/clips/upload error:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post("/api/clips/from-url", async (req, res) => {
+  try {
+    const { url } = req.body;
+    if (!url || typeof url !== "string" || !YOUTUBE_URL_PATTERN.test(url.trim())) {
+      return res.status(400).json({ success: false, error: "That doesn't look like a valid YouTube URL." });
+    }
+
+    const job = createJob();
+    res.json({ success: true, jobId: job.id });
+
+    runClipPipeline(job, { kind: "youtube", url: url.trim() });
+
+  } catch (err) {
+    console.error("❌ /api/clips/from-url error:", err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -735,6 +825,6 @@ app.use((err, req, res, next) => {
 // ─────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-  console.log(`🚀 Xarvis AI v4.4 running on port ${PORT}`);
+  console.log(`🚀 Xarvis AI v4.5 running on port ${PORT}`);
   console.log(`   Health: http://localhost:${PORT}/api/health`);
 });
