@@ -1,20 +1,27 @@
 /**
- * XARVIS AI — SERVER v4.8
+ * XARVIS AI — SERVER v5.0
  *
- * Changes from v4.5:
- * - FIX: yt-dlp failures only ever showed "Command failed with exit code 1:
- *   <the command>" — the actual reason (YouTube's response) lives in
- *   err.stderr, which was being discarded. extractYtDlpError() now pulls
- *   the real stderr text.
- * - FIX: added the android player-client + mobile user-agent workaround
- *   (YTDLP_COMMON_OPTS) to both metadata and download calls. YouTube's
- *   "Sign in to confirm you're not a bot" check disproportionately blocks
- *   cloud-hosted IPs (Render, AWS, GCP) — this is the most common real
- *   cause of yt-dlp failures on hosted servers, and the android client
- *   skips the browser JS challenge that triggers it.
- * - NEW: friendlyYoutubeError() maps known failure patterns (bot-check,
- *   private/unavailable, age-restricted, removed) to specific, honest
- *   user-facing messages instead of a generic "download failed."
+ * Changes from v4.8:
+ * - ROOT-CAUSE FIX: removed the "yt-dlp-exec" npm dependency entirely.
+ *   That package relies on its own postinstall script to download the
+ *   actual yt-dlp binary from GitHub during `npm install` — that step
+ *   wasn't completing reliably on Render's build (invisible failure,
+ *   zero build-log warning), producing an ENOENT for
+ *   node_modules/yt-dlp-exec/bin/yt-dlp at request time instead.
+ * - NEW: ensureYtDlpBinary() downloads the yt-dlp_linux standalone binary
+ *   (PyInstaller build, no python3 dependency) ourselves at server
+ *   startup, to a path we control, verifies the file size looks real
+ *   (catches "downloaded an HTML error page" silently truncating to a
+ *   tiny file), and logs success/failure loudly in the boot logs — not
+ *   discovered later on a user's first request.
+ * - NEW: runYtDlpBinary()/ytdlpOptsToArgs() spawn that binary directly via
+ *   child_process.execFile with our own CLI-flag translation, replacing
+ *   every yt-dlp-exec call site. Same external behavior (same flags, same
+ *   player-client fallback order, same cookie/proxy support from v4.8),
+ *   just no longer dependent on a third-party package's binary resolution.
+ * - If the binary fails to download at boot (e.g. GitHub unreachable from
+ *   Render's network), YouTube ingestion cleanly reports that specific
+ *   failure per-request; file upload is entirely unaffected either way.
  * - Still Groq-only. yt-dlp is a download tool, not an AI provider.
  */
 
@@ -25,7 +32,8 @@ import Groq from "groq-sdk";
 import multer from "multer";
 import ffmpeg from "fluent-ffmpeg";
 import ffmpegInstaller from "@ffmpeg-installer/ffmpeg";
-import ytDlpExec from "yt-dlp-exec";
+import axios from "axios";
+import { execFile } from "child_process";
 import fs from "fs";
 import path from "path";
 import os from "os";
@@ -50,7 +58,7 @@ app.use(cors({
 // ─────────────────────────────────────────────
 // STARTUP CHECKS
 // ─────────────────────────────────────────────
-console.log("🚀 Starting Xarvis AI Server v4.8...");
+console.log("🚀 Starting Xarvis AI Server v5.0...");
 console.log("✅ GROQ KEY EXISTS:", !!process.env.GROQ_API_KEY);
 
 if (!process.env.GROQ_API_KEY) {
@@ -360,13 +368,128 @@ function createJob() {
 }
 
 /**
- * yt-dlp-exec throws an error whose top-level .message is just
- * "Command failed with exit code N: <the command that was run>" — the
- * actual reason (YouTube's response, a bad URL, etc.) lives in .stderr.
- * Without this, every failure looked identical and undebuggable.
+ * ─────────────────────────────────────────────
+ * YT-DLP BINARY — self-managed, not delegated to a third-party postinstall
+ * ─────────────────────────────────────────────
+ * yt-dlp-exec (and similar wrapper packages) rely on their own postinstall
+ * script to fetch the yt-dlp binary from GitHub during `npm install`. That
+ * step running (or not) is invisible to us and evidently isn't completing
+ * reliably on Render's build — hence the ENOENT at request time with zero
+ * warning at build time. Instead of trying to make someone else's install
+ * hook behave, we fetch and verify the binary ourselves, at server startup,
+ * to a path we control, with errors that show up immediately and loudly in
+ * Render's boot logs rather than silently surfacing later on some user's
+ * first request.
+ *
+ * We use `yt-dlp_linux` specifically — the PyInstaller-built standalone
+ * binary — rather than the generic `yt-dlp` release, because the generic
+ * one is a Python zipapp that requires `python3` on PATH, which a Node
+ * buildpack image has no guaranteed to have. `yt-dlp_linux` has no such
+ * dependency; it's a single self-contained executable.
+ */
+const YTDLP_BIN_DIR = path.join(os.tmpdir(), "xarvis-bin");
+const YTDLP_BIN_PATH = path.join(YTDLP_BIN_DIR, "yt-dlp");
+const YTDLP_DOWNLOAD_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux";
+
+let ytdlpBinaryReady = false;
+
+async function ensureYtDlpBinary() {
+  try {
+    if (fs.existsSync(YTDLP_BIN_PATH) && fs.statSync(YTDLP_BIN_PATH).size > 0) {
+      ytdlpBinaryReady = true;
+      console.log("✅ yt-dlp binary already present at", YTDLP_BIN_PATH);
+      return;
+    }
+
+    console.log(`⬇️  yt-dlp binary not found — downloading from ${YTDLP_DOWNLOAD_URL} ...`);
+    fs.mkdirSync(YTDLP_BIN_DIR, { recursive: true });
+
+    const response = await axios.get(YTDLP_DOWNLOAD_URL, {
+      responseType: "stream",
+      maxRedirects: 5,
+      timeout: 60_000,
+    });
+
+    await new Promise((resolve, reject) => {
+      const writer = fs.createWriteStream(YTDLP_BIN_PATH);
+      response.data.pipe(writer);
+      writer.on("finish", resolve);
+      writer.on("error", reject);
+      response.data.on("error", reject);
+    });
+
+    fs.chmodSync(YTDLP_BIN_PATH, 0o755);
+
+    const size = fs.statSync(YTDLP_BIN_PATH).size;
+    if (size < 1_000_000) { // the real binary is tens of MB — a tiny file means we downloaded an error page, not the binary
+      throw new Error(`Downloaded file is only ${size} bytes — expected a multi-megabyte binary. The download likely failed or was redirected to an error page.`);
+    }
+
+    ytdlpBinaryReady = true;
+    console.log(`✅ yt-dlp binary downloaded and made executable (${(size / 1024 / 1024).toFixed(1)}MB) at ${YTDLP_BIN_PATH}`);
+  } catch (err) {
+    ytdlpBinaryReady = false;
+    console.error("❌ FATAL for YouTube ingestion: could not obtain the yt-dlp binary:", err.message);
+    console.error("   File uploads will still work — only YouTube link ingestion is affected.");
+  }
+}
+
+/**
+ * Runs the yt-dlp binary directly via child_process, translating our option
+ * object into CLI flags ourselves. This is the only place that needs to
+ * know the CLI flag names — everything upstream just passes a plain object.
+ */
+function ytdlpOptsToArgs(url, opts) {
+  const args = [];
+  if (opts.dumpSingleJson) args.push("--dump-single-json");
+  if (opts.noWarnings) args.push("--no-warnings");
+  if (opts.noCheckCertificates) args.push("--no-check-certificates");
+  if (opts.preferFreeFormats) args.push("--prefer-free-formats");
+  if (opts.skipDownload) args.push("--skip-download");
+  if (opts.noPlaylist) args.push("--no-playlist");
+  if (opts.extractorArgs) args.push("--extractor-args", opts.extractorArgs);
+  if (opts.cookies) args.push("--cookies", opts.cookies);
+  if (opts.proxy) args.push("--proxy", opts.proxy);
+  if (opts.format) args.push("--format", opts.format);
+  if (opts.output) args.push("--output", opts.output);
+  if (opts.maxFilesize) args.push("--max-filesize", String(opts.maxFilesize));
+  args.push(url);
+  return args;
+}
+
+function runYtDlpBinary(url, opts) {
+  return new Promise((resolve, reject) => {
+    if (!ytdlpBinaryReady) {
+      reject(new Error("The yt-dlp binary isn't available on this server (it failed to download at startup — check the Render logs for the exact download error). YouTube link ingestion can't run until that's resolved; file upload is unaffected."));
+      return;
+    }
+    const args = ytdlpOptsToArgs(url, opts);
+    execFile(YTDLP_BIN_PATH, args, { maxBuffer: 1024 * 1024 * 50, timeout: 5 * 60 * 1000 }, (error, stdout, stderr) => {
+      if (error) {
+        error.stderr = stderr;
+        reject(error);
+        return;
+      }
+      if (opts.dumpSingleJson) {
+        try {
+          resolve(JSON.parse(stdout));
+        } catch (parseErr) {
+          reject(new Error(`yt-dlp returned output that wasn't valid JSON: ${parseErr.message}`));
+        }
+      } else {
+        resolve(stdout);
+      }
+    });
+  });
+}
+
+/**
+ * yt-dlp's stderr is where the actual reason for a failure lives (YouTube's
+ * response, a bad URL, etc.) — the raw Node error.message alone is just
+ * "Command failed with exit code N".
  */
 function extractYtDlpError(err) {
-  const stderr = (err && (err.stderr || err.shortMessage)) || "";
+  const stderr = (err && err.stderr) || "";
   const cleaned = String(stderr)
     .split("\n")
     .filter((line) => line.trim() && !line.trim().startsWith("[debug]"))
@@ -437,7 +560,7 @@ async function runYtDlpWithFallback(url, extraOpts) {
   let lastErr;
   for (const client of YTDLP_CLIENT_FALLBACK_ORDER) {
     try {
-      return await ytDlpExec(url, { ...ytdlpBaseOpts(client), ...extraOpts });
+      return await runYtDlpBinary(url, { ...ytdlpBaseOpts(client), ...extraOpts });
     } catch (err) {
       lastErr = err;
       if (!isBotCheckError(err)) throw err; // a different kind of failure — no point trying other clients
@@ -777,12 +900,13 @@ async function testGroq() {
 }
 
 await testGroq();
+await ensureYtDlpBinary();
 
 // ─────────────────────────────────────────────
 // ROUTES — HEALTH
 // ─────────────────────────────────────────────
 app.get("/", (req, res) => {
-  res.json({ status: "online", message: "🚀 Xarvis AI v4.8" });
+  res.json({ status: "online", message: "🚀 Xarvis AI v5.0" });
 });
 
 app.get("/api/health", (req, res) => {
@@ -964,6 +1088,6 @@ app.use((err, req, res, next) => {
 // ─────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-  console.log(`🚀 Xarvis AI v4.8 running on port ${PORT}`);
+  console.log(`🚀 Xarvis AI v5.0 running on port ${PORT}`);
   console.log(`   Health: http://localhost:${PORT}/api/health`);
 });
