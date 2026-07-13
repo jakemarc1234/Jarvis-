@@ -1,5 +1,5 @@
 /**
- * XARVIS AI — SERVER v4.7
+ * XARVIS AI — SERVER v4.8
  *
  * Changes from v4.5:
  * - FIX: yt-dlp failures only ever showed "Command failed with exit code 1:
@@ -50,7 +50,7 @@ app.use(cors({
 // ─────────────────────────────────────────────
 // STARTUP CHECKS
 // ─────────────────────────────────────────────
-console.log("🚀 Starting Xarvis AI Server v4.7...");
+console.log("🚀 Starting Xarvis AI Server v4.8...");
 console.log("✅ GROQ KEY EXISTS:", !!process.env.GROQ_API_KEY);
 
 if (!process.env.GROQ_API_KEY) {
@@ -401,6 +401,9 @@ if (process.env.YTDLP_COOKIES && process.env.YTDLP_COOKIES.trim()) {
 } else {
   console.log("ℹ️  YTDLP_COOKIES not set — YouTube downloads will rely on player-client spoofing only, which YouTube's bot-check can still block. See server.js comments for how to set it.");
 }
+if (process.env.YTDLP_PROXY && process.env.YTDLP_PROXY.trim()) {
+  console.log("✅ YTDLP_PROXY configured — YouTube downloads will route through it.");
+}
 
 // Player clients to try in order — success is inconsistent and shifts as
 // YouTube patches things, so we no longer bet on a single one.
@@ -413,6 +416,14 @@ function ytdlpBaseOpts(playerClient) {
     extractorArgs: `youtube:player_client=${playerClient}`,
   };
   if (ytdlpCookiesReady) opts.cookies = YTDLP_COOKIES_PATH;
+  // Option B from the audit: a residential/mobile proxy from a provider
+  // (Bright Data, Oxylabs, Smartproxy, etc.) sidesteps the datacenter-IP
+  // bot-check entirely, independent of cookies. Set YTDLP_PROXY to the
+  // full proxy URL, e.g. http://user:pass@host:port — no other code
+  // changes needed if this is the direction you choose.
+  if (process.env.YTDLP_PROXY && process.env.YTDLP_PROXY.trim()) {
+    opts.proxy = process.env.YTDLP_PROXY.trim();
+  }
   return opts;
 }
 
@@ -588,15 +599,37 @@ async function analyzeTranscriptChunk(chunk, chunkIndex) {
  * heavily-overlapping lower-score clips, and returns the top 10 ranked by
  * score.
  */
+// How many chunk-analysis calls run at once. Capped rather than unlimited
+// because Groq enforces per-account rate limits — firing all chunks of a
+// long video simultaneously would trade one bottleneck for 429s. 4 is a
+// conservative default that still cuts a 6-chunk (30min) video's analysis
+// time roughly in half to a third versus fully sequential.
+const CHUNK_ANALYSIS_CONCURRENCY = Number(process.env.CHUNK_ANALYSIS_CONCURRENCY) || 4;
+
+async function mapWithConcurrency(items, limit, fn) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  async function worker() {
+    while (nextIndex < items.length) {
+      const i = nextIndex++;
+      results[i] = await fn(items[i], i);
+    }
+  }
+  const workers = Array.from({ length: Math.min(limit, items.length) }, worker);
+  await Promise.all(workers);
+  return results;
+}
+
 async function analyzeTranscript(segments) {
   const chunks = chunkTranscript(segments);
   if (!chunks.length) return [];
 
-  const results = [];
-  for (let i = 0; i < chunks.length; i++) {
-    const clips = await analyzeTranscriptChunk(chunks[i], i);
-    results.push(...clips);
-  }
+  const perChunkResults = await mapWithConcurrency(
+    chunks,
+    CHUNK_ANALYSIS_CONCURRENCY,
+    (chunk, i) => analyzeTranscriptChunk(chunk, i)
+  );
+  const results = perChunkResults.flat();
 
   const normalized = results
     .map((c) => ({
@@ -749,7 +782,7 @@ await testGroq();
 // ROUTES — HEALTH
 // ─────────────────────────────────────────────
 app.get("/", (req, res) => {
-  res.json({ status: "online", message: "🚀 Xarvis AI v4.7" });
+  res.json({ status: "online", message: "🚀 Xarvis AI v4.8" });
 });
 
 app.get("/api/health", (req, res) => {
@@ -931,6 +964,6 @@ app.use((err, req, res, next) => {
 // ─────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-  console.log(`🚀 Xarvis AI v4.7 running on port ${PORT}`);
+  console.log(`🚀 Xarvis AI v4.8 running on port ${PORT}`);
   console.log(`   Health: http://localhost:${PORT}/api/health`);
 });
