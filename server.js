@@ -1,5 +1,5 @@
 /**
- * XARVIS AI — SERVER v4.6
+ * XARVIS AI — SERVER v4.7
  *
  * Changes from v4.5:
  * - FIX: yt-dlp failures only ever showed "Command failed with exit code 1:
@@ -50,7 +50,7 @@ app.use(cors({
 // ─────────────────────────────────────────────
 // STARTUP CHECKS
 // ─────────────────────────────────────────────
-console.log("🚀 Starting Xarvis AI Server v4.6...");
+console.log("🚀 Starting Xarvis AI Server v4.7...");
 console.log("✅ GROQ KEY EXISTS:", !!process.env.GROQ_API_KEY);
 
 if (!process.env.GROQ_API_KEY) {
@@ -375,15 +375,66 @@ function extractYtDlpError(err) {
   return cleaned || err?.message || String(err);
 }
 
-// Common workaround for YouTube's bot-check ("Sign in to confirm you're not
-// a bot") which disproportionately hits cloud-hosted IPs like Render's —
-// the android player client skips the browser JS challenge entirely.
-const YTDLP_COMMON_OPTS = {
-  noWarnings: true,
-  noCheckCertificates: true,
-  extractorArgs: "youtube:player_client=android",
-  addHeader: ["referer:youtube.com", "user-agent:com.google.android.youtube/19.09.37 (Linux; U; Android 14) gzip"],
-};
+function isBotCheckError(err) {
+  return /sign in to confirm|not a bot|confirm you.?re not a bot/i.test(extractYtDlpError(err));
+}
+
+/**
+ * Real fix for YouTube's bot-check: authenticate as a logged-in browser
+ * session via cookies, same as every production tool does. Set the
+ * YTDLP_COOKIES env var on Render to the full contents of a cookies.txt
+ * file exported from a logged-in YouTube session in your own browser (the
+ * "Get cookies.txt LOCALLY" extension does this in one click — export
+ * while on youtube.com). Without this set, yt-dlp falls back to
+ * unauthenticated requests, which is what cloud IPs get bot-checked on.
+ */
+const YTDLP_COOKIES_PATH = path.join(os.tmpdir(), "xarvis-yt-cookies.txt");
+let ytdlpCookiesReady = false;
+if (process.env.YTDLP_COOKIES && process.env.YTDLP_COOKIES.trim()) {
+  try {
+    fs.writeFileSync(YTDLP_COOKIES_PATH, process.env.YTDLP_COOKIES.trim() + "\n");
+    ytdlpCookiesReady = true;
+    console.log("✅ YouTube cookies file configured — authenticated downloads enabled.");
+  } catch (err) {
+    console.error("⚠️ Could not write YTDLP_COOKIES to disk:", err.message);
+  }
+} else {
+  console.log("ℹ️  YTDLP_COOKIES not set — YouTube downloads will rely on player-client spoofing only, which YouTube's bot-check can still block. See server.js comments for how to set it.");
+}
+
+// Player clients to try in order — success is inconsistent and shifts as
+// YouTube patches things, so we no longer bet on a single one.
+const YTDLP_CLIENT_FALLBACK_ORDER = ["android", "ios", "web_embedded", "tv_embedded"];
+
+function ytdlpBaseOpts(playerClient) {
+  const opts = {
+    noWarnings: true,
+    noCheckCertificates: true,
+    extractorArgs: `youtube:player_client=${playerClient}`,
+  };
+  if (ytdlpCookiesReady) opts.cookies = YTDLP_COOKIES_PATH;
+  return opts;
+}
+
+/**
+ * Runs a yt-dlp call, retrying with the next player client only when the
+ * failure looks like YouTube's bot-check (retrying on every kind of error —
+ * a genuinely private video, say — would just waste time failing the same
+ * way four times over).
+ */
+async function runYtDlpWithFallback(url, extraOpts) {
+  let lastErr;
+  for (const client of YTDLP_CLIENT_FALLBACK_ORDER) {
+    try {
+      return await ytDlpExec(url, { ...ytdlpBaseOpts(client), ...extraOpts });
+    } catch (err) {
+      lastErr = err;
+      if (!isBotCheckError(err)) throw err; // a different kind of failure — no point trying other clients
+      console.warn(`[yt-dlp] client "${client}" hit bot-check, trying next client...`);
+    }
+  }
+  throw lastErr;
+}
 
 /**
  * Fetch metadata only (no download) so we can reject unreasonably long
@@ -391,8 +442,7 @@ const YTDLP_COMMON_OPTS = {
  */
 async function fetchYoutubeMetadata(url) {
   try {
-    return await ytDlpExec(url, {
-      ...YTDLP_COMMON_OPTS,
+    return await runYtDlpWithFallback(url, {
       dumpSingleJson: true,
       preferFreeFormats: true,
       skipDownload: true,
@@ -410,8 +460,7 @@ async function fetchYoutubeMetadata(url) {
  */
 async function downloadYoutubeVideo(url, outputPath) {
   try {
-    await ytDlpExec(url, {
-      ...YTDLP_COMMON_OPTS,
+    await runYtDlpWithFallback(url, {
       output: outputPath,
       format: "worst[ext=mp4]/worst",
       noPlaylist: true,
@@ -602,7 +651,9 @@ async function analyzeTranscript(segments) {
 function friendlyYoutubeError(rawMessage, action) {
   const msg = String(rawMessage || "");
   if (/sign in to confirm|not a bot|confirm you.?re not a bot/i.test(msg)) {
-    return `YouTube is blocking this server's connection with a bot-check (this happens on cloud-hosted servers, not because of anything wrong with the link). Please upload the video file directly instead — that path doesn't go through YouTube at all.`;
+    return ytdlpCookiesReady
+      ? `YouTube is still blocking this server's connection even with cookies configured — the cookies may have expired (YouTube session cookies typically last a few weeks). Export a fresh cookies.txt and update YTDLP_COOKIES on Render, or upload the video file directly for now.`
+      : `YouTube is blocking this server's connection with a bot-check — this happens on cloud-hosted servers and needs authenticated cookies to fix reliably (ask about setting up YTDLP_COOKIES). For now, please upload the video file directly instead — that path doesn't go through YouTube at all.`;
   }
   if (/private video|video unavailable/i.test(msg)) {
     return `That video is private or unavailable. Double-check the link, or upload the file directly.`;
@@ -698,7 +749,7 @@ await testGroq();
 // ROUTES — HEALTH
 // ─────────────────────────────────────────────
 app.get("/", (req, res) => {
-  res.json({ status: "online", message: "🚀 Xarvis AI v4.6" });
+  res.json({ status: "online", message: "🚀 Xarvis AI v4.7" });
 });
 
 app.get("/api/health", (req, res) => {
@@ -880,6 +931,6 @@ app.use((err, req, res, next) => {
 // ─────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-  console.log(`🚀 Xarvis AI v4.6 running on port ${PORT}`);
+  console.log(`🚀 Xarvis AI v4.7 running on port ${PORT}`);
   console.log(`   Health: http://localhost:${PORT}/api/health`);
 });
