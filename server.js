@@ -494,6 +494,7 @@ function runYtDlpBinary(url, opts) {
       return;
     }
     const args = ytdlpOptsToArgs(url, opts);
+    console.log("YT-DLP COMMAND:", YTDLP_BIN_PATH, args.join(" "));
     execFile(YTDLP_BIN_PATH, args, { maxBuffer: 1024 * 1024 * 50, timeout: 5 * 60 * 1000 }, (error, stdout, stderr) => {
       if (error) {
         error.stderr = stderr;
