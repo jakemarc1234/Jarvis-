@@ -1,5 +1,5 @@
 /**
- * XARVIS AI — SERVER v5.0
+ * XARVIS AI — SERVER v5.1
  *
  * Changes from v4.8:
  * - ROOT-CAUSE FIX: removed the "yt-dlp-exec" npm dependency entirely.
@@ -58,7 +58,7 @@ app.use(cors({
 // ─────────────────────────────────────────────
 // STARTUP CHECKS
 // ─────────────────────────────────────────────
-console.log("🚀 Starting Xarvis AI Server v5.0...");
+console.log("🚀 Starting Xarvis AI Server v5.1...");
 console.log("✅ GROQ KEY EXISTS:", !!process.env.GROQ_API_KEY);
 
 if (!process.env.GROQ_API_KEY) {
@@ -258,7 +258,6 @@ Each clip must include:
 - start_time
 - end_time
 - title (short, viral style)
-- hook (first 3 seconds)
 - reason (why it will perform)
 - attention_type (one of the categories above)
 - viral_score (1–100)
@@ -271,7 +270,6 @@ Each clip must include:
       "start_time": "00:01:12",
       "end_time": "00:01:45",
       "title": "Most people quit too early",
-      "hook": "You're probably doing this wrong...",
       "reason": "Strong emotional + relatable failure moment",
       "attention_type": "surprise_reveal",
       "viral_score": 92,
@@ -286,6 +284,25 @@ Transcript chunk:
 """
 ${chunk}
 """`;
+  },
+
+  // ── generateHooks — final pass, only over the clips that survived
+  // ranking/dedup. Given a real (verbatim, non-hallucinated) transcript
+  // excerpt for each clip plus its title/reason, writes one scroll-stopping
+  // hook per clip. Kept as a single batched call rather than per-clip so
+  // it's one extra API round-trip regardless of how many clips survive.
+  generateHooks({ clips }) {
+    const list = clips
+      .map((c, i) => `${i}. Title: "${c.title}"\nReason: ${c.reason}\nTranscript: "${c.transcript_preview}"`)
+      .join("\n\n");
+    return `You write scroll-stopping hooks for short-form video clips (YouTube Shorts, TikTok, Reels).
+For each numbered clip below, write ONE hook — the line that would appear as on-screen text or be spoken in the first 2 seconds to stop someone from scrolling past.
+Base the hook on the actual transcript excerpt provided — it should feel like a natural extract or tease of what's said, not a generic marketing line.
+Return ONLY JSON, no markdown fences, no preamble, in this exact shape:
+{ "hooks": ["hook for clip 0", "hook for clip 1", ...] }
+The array must have exactly ${clips.length} entries, in the same order as the clips below.
+
+${list}`;
   },
 };
 
@@ -334,9 +351,22 @@ const YOUTUBE_URL_PATTERN = /^(https?:\/\/)?(www\.)?(youtube\.com\/(watch\?v=|sh
 
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
+const SUPPORTED_VIDEO_EXTENSIONS = [".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"];
+
 const upload = multer({
   dest: UPLOAD_DIR,
   limits: { fileSize: MAX_UPLOAD_BYTES },
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname || "").toLowerCase();
+    if (!SUPPORTED_VIDEO_EXTENSIONS.includes(ext)) {
+      // Passing an Error here (rather than throwing) is how multer reports
+      // a clean rejection instead of a generic stream failure — it surfaces
+      // through the same `err` path as MulterError in the error middleware.
+      cb(new Error(`Unsupported file type "${ext || "unknown"}". Supported formats: ${SUPPORTED_VIDEO_EXTENSIONS.join(", ")}.`));
+      return;
+    }
+    cb(null, true);
+  },
 });
 
 // In-memory job store. Phase 1 only — resets on server restart/redeploy.
@@ -358,7 +388,7 @@ function createJob() {
   const job = {
     id,
     status: "processing", // processing | done | error
-    stage: "queued",      // queued | retrieving_video | extracting_audio | transcribing | analyzing | done
+    stage: "queued",      // queued | retrieving_video | validating | extracting_audio | transcribing | analyzing | generating_hooks | done
     error: null,
     clips: null,
     createdAt: Date.now(),
@@ -587,22 +617,68 @@ async function fetchYoutubeMetadata(url) {
 }
 
 /**
- * Downloads a YouTube video to disk via yt-dlp, capped to a resolution that
- * keeps file size reasonable (audio is all that matters downstream, but we
- * keep a low-res video stream too so ffmpeg has a normal container to pull
- * audio from).
+ * Downloads a YouTube video's audio via yt-dlp. FIX: previously requested
+ * "worst[ext=mp4]/worst" — a muxed video+audio format in an mp4 container.
+ * Many videos no longer serve progressive/muxed formats at all (YouTube
+ * increasingly only exposes separate video-only and audio-only adaptive
+ * streams), so that selector had nothing to match and yt-dlp failed with
+ * "Requested format is not available." We never needed video in the first
+ * place — extractAudio() immediately discards it — so requesting
+ * "bestaudio/best" is both the fix and strictly less work: audio-only
+ * streams are essentially always available, and downloads are smaller.
+ *
+ * outputPath should be a template ending in `.%(ext)s` rather than a fixed
+ * extension, since the actual container yt-dlp picks (m4a/webm/opus) isn't
+ * known in advance. ffmpeg auto-detects the real container from file
+ * content in extractAudio(), so a "wrong" extension on disk doesn't matter.
  */
 async function downloadYoutubeVideo(url, outputPath) {
   try {
     await runYtDlpWithFallback(url, {
       output: outputPath,
-      format: "worst[ext=mp4]/worst",
+      format: "bestaudio/best",
       noPlaylist: true,
       maxFilesize: `${MAX_UPLOAD_BYTES}`,
     });
   } catch (err) {
     throw new Error(extractYtDlpError(err));
   }
+}
+
+/**
+ * Real "validating file" stage: probes the file with ffprobe to confirm it
+ * has at least one usable stream before committing to extraction/
+ * transcription/analysis. Catches corrupted files, mislabeled non-video
+ * files, and empty uploads with one clean error here instead of a raw
+ * ffmpeg stack trace surfacing three stages later.
+ */
+function validateVideoFile(videoPath) {
+  return new Promise((resolve, reject) => {
+    const stat = fs.existsSync(videoPath) ? fs.statSync(videoPath) : null;
+    if (!stat || stat.size === 0) {
+      reject(new Error("The uploaded file is empty."));
+      return;
+    }
+    ffmpeg.ffprobe(videoPath, (err, metadata) => {
+      if (err) {
+        reject(new Error("That file doesn't look like a playable video — it may be corrupted, encrypted, or not actually a video file. Try a different file."));
+        return;
+      }
+      const hasAudioOrVideoStream = (metadata?.streams || []).some(
+        (s) => s.codec_type === "audio" || s.codec_type === "video"
+      );
+      if (!hasAudioOrVideoStream) {
+        reject(new Error("That file doesn't contain any audio or video stream Xarvis can read."));
+        return;
+      }
+      const hasAudio = (metadata?.streams || []).some((s) => s.codec_type === "audio");
+      if (!hasAudio) {
+        reject(new Error("That video doesn't have an audio track — Xarvis needs spoken audio to find viral moments."));
+        return;
+      }
+      resolve(metadata);
+    });
+  });
 }
 
 /** Extract audio from a video file to mono 16kHz mp3 (small + Whisper-friendly). */
@@ -743,7 +819,49 @@ async function mapWithConcurrency(items, limit, fn) {
   return results;
 }
 
-async function analyzeTranscript(segments) {
+/**
+ * Pulls the actual verbatim transcript text for a clip's time range directly
+ * from Whisper's segments — not asked of the LLM, so it's guaranteed
+ * accurate rather than a paraphrase or hallucination. This is what powers
+ * the "Transcript Preview" on each result card.
+ */
+function extractTranscriptExcerpt(segments, startSec, endSec) {
+  const text = segments
+    .filter((s) => s.end >= startSec && s.start <= endSec)
+    .map((s) => s.text.trim())
+    .join(" ")
+    .trim();
+  if (text.length <= 240) return text;
+  return text.slice(0, 240).trim() + "…";
+}
+
+/**
+ * Final pass, run once over only the clips that survived ranking/dedup
+ * (not per-chunk-candidate, which would waste tokens on discarded clips).
+ * Falls back to using the transcript excerpt itself as the "hook" if this
+ * call fails — never blocks the whole job on one extra API call failing.
+ */
+async function generateHooksForClips(clips) {
+  if (!clips.length) return clips;
+  try {
+    const completion = await groq.chat.completions.create({
+      model: ANALYSIS_MODEL,
+      messages: [{ role: "user", content: PROMPTS.generateHooks({ clips }) }],
+      temperature: 0.6,
+      max_tokens: 800,
+    });
+    const raw = completion?.choices?.[0]?.message?.content || "";
+    const cleaned = raw.replace(/```json|```/g, "").trim();
+    const parsed = JSON.parse(cleaned);
+    const hooks = Array.isArray(parsed.hooks) ? parsed.hooks : [];
+    return clips.map((c, i) => ({ ...c, hook: hooks[i] || c.transcript_preview || c.title }));
+  } catch (err) {
+    console.error("⚠️ Hook generation failed, falling back to transcript excerpt as hook:", err.message);
+    return clips.map((c) => ({ ...c, hook: c.transcript_preview || c.title }));
+  }
+}
+
+async function analyzeTranscript(segments, job) {
   const chunks = chunkTranscript(segments);
   if (!chunks.length) return [];
 
@@ -759,7 +877,6 @@ async function analyzeTranscript(segments) {
       title: c.title || "Untitled clip",
       start: c.start_time || c.start,
       end: c.end_time || c.end,
-      hook: c.hook || "",
       reason: c.reason || "",
       attention_type: VALID_ATTENTION_TYPES.has(c.attention_type) ? c.attention_type : null,
       attention_score: Number(c.viral_score ?? c.attention_score ?? 0),
@@ -782,11 +899,13 @@ async function analyzeTranscript(segments) {
       return shorterLen > 0 && overlap / shorterLen > 0.5;
     });
 
-    if (!overlapsExisting) accepted.push(clip);
+    if (!overlapsExisting) accepted.push({ ...clip, transcript_preview: extractTranscriptExcerpt(segments, start, end) });
     if (accepted.length >= 10) break;
   }
 
-  return accepted.map((c, i) => ({ rank: i + 1, ...c }));
+  const ranked = accepted.map((c, i) => ({ rank: i + 1, ...c }));
+  if (job) job.stage = "generating_hooks";
+  return generateHooksForClips(ranked);
 }
 
 /**
@@ -840,17 +959,30 @@ async function runClipPipeline(job, source) {
         throw new Error(`That video is ${Math.round(meta.duration / 60)} minutes long — Phase 1 supports up to ${MAX_YOUTUBE_DURATION_SECONDS / 60} minutes. Try a shorter video or upload a trimmed file instead.`);
       }
 
-      videoPath = path.join(UPLOAD_DIR, `${job.id}.mp4`);
-      await downloadYoutubeVideo(source.url, videoPath).catch((err) => {
+      const outputTemplate = path.join(UPLOAD_DIR, `${job.id}.%(ext)s`);
+      await downloadYoutubeVideo(source.url, outputTemplate).catch((err) => {
         throw new Error(friendlyYoutubeError(err.message, "download that video"));
       });
 
-      if (!fs.existsSync(videoPath) || fs.statSync(videoPath).size === 0) {
+      // yt-dlp resolves %(ext)s to whatever container the chosen audio
+      // stream actually came in (m4a/webm/opus/etc.) — find that real file
+      // rather than assuming a fixed extension.
+      const downloadedFile = fs.readdirSync(UPLOAD_DIR).find((f) => f.startsWith(`${job.id}.`));
+      if (!downloadedFile) {
+        throw new Error("Download completed but the resulting file couldn't be found — the video may be age-restricted, private, or region-locked.");
+      }
+      videoPath = path.join(UPLOAD_DIR, downloadedFile);
+
+      if (fs.statSync(videoPath).size === 0) {
         throw new Error("Download completed but produced an empty file — the video may be age-restricted, private, or region-locked.");
       }
     }
 
     audioPath = videoPath + ".mp3";
+
+    job.stage = "validating";
+    console.log(`[job ${job.id}] validating file...`);
+    await validateVideoFile(videoPath);
 
     job.stage = "extracting_audio";
     console.log(`[job ${job.id}] extracting audio...`);
@@ -866,7 +998,7 @@ async function runClipPipeline(job, source) {
 
     job.stage = "analyzing";
     console.log(`[job ${job.id}] analyzing ${segments.length} segments...`);
-    const clips = await analyzeTranscript(segments);
+    const clips = await analyzeTranscript(segments, job);
 
     job.clips = clips;
     job.status = "done";
@@ -906,7 +1038,7 @@ await ensureYtDlpBinary();
 // ROUTES — HEALTH
 // ─────────────────────────────────────────────
 app.get("/", (req, res) => {
-  res.json({ status: "online", message: "🚀 Xarvis AI v5.0" });
+  res.json({ status: "online", message: "🚀 Xarvis AI v5.1" });
 });
 
 app.get("/api/health", (req, res) => {
@@ -1079,6 +1211,9 @@ app.use((err, req, res, next) => {
       : `Upload error: ${err.message}`;
     return res.status(400).json({ success: false, error: msg });
   }
+  if (err.message?.startsWith("Unsupported file type")) {
+    return res.status(400).json({ success: false, error: err.message });
+  }
   console.error("❌ Unhandled error:", err.message);
   res.status(500).json({ success: false, error: err.message });
 });
@@ -1088,6 +1223,6 @@ app.use((err, req, res, next) => {
 // ─────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-  console.log(`🚀 Xarvis AI v5.0 running on port ${PORT}`);
+  console.log(`🚀 Xarvis AI v5.1 running on port ${PORT}`);
   console.log(`   Health: http://localhost:${PORT}/api/health`);
 });
