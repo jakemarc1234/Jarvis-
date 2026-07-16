@@ -488,8 +488,10 @@ function ytdlpOptsToArgs(url, opts) {
 }
 
 function runYtDlpBinary(url, opts) {
+  console.log("YT-DLP DIAGNOSTIC — runYtDlpBinary() called for URL:", url);
   return new Promise((resolve, reject) => {
     if (!ytdlpBinaryReady) {
+      console.log("YT-DLP DIAGNOSTIC — ytdlpBinaryReady is false, rejecting before execFile runs at all.");
       reject(new Error("The yt-dlp binary isn't available on this server (it failed to download at startup — check the Render logs for the exact download error). YouTube link ingestion can't run until that's resolved; file upload is unaffected."));
       return;
     }
@@ -497,6 +499,13 @@ function runYtDlpBinary(url, opts) {
     console.log("YT-DLP COMMAND:", YTDLP_BIN_PATH, args.join(" "));
     execFile(YTDLP_BIN_PATH, args, { maxBuffer: 1024 * 1024 * 50, timeout: 5 * 60 * 1000 }, (error, stdout, stderr) => {
       if (error) {
+        console.log("YT-DLP DIAGNOSTIC — command failed");
+        console.log("YT-DLP DIAGNOSTIC — full command:", YTDLP_BIN_PATH, args.join(" "));
+        console.log("YT-DLP DIAGNOSTIC — error.message:", error.message);
+        console.log("YT-DLP DIAGNOSTIC — error.code (exit code):", error.code);
+        console.log("YT-DLP DIAGNOSTIC — error.signal:", error.signal);
+        console.log("YT-DLP DIAGNOSTIC — full stderr:\n" + stderr);
+        console.log("YT-DLP DIAGNOSTIC — full stdout:\n" + stdout);
         error.stderr = stderr;
         reject(error);
         return;
@@ -505,6 +514,7 @@ function runYtDlpBinary(url, opts) {
         try {
           resolve(JSON.parse(stdout));
         } catch (parseErr) {
+          console.log("YT-DLP DIAGNOSTIC — JSON parse failed. Raw stdout was:\n" + stdout);
           reject(new Error(`yt-dlp returned output that wasn't valid JSON: ${parseErr.message}`));
         }
       } else {
