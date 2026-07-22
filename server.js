@@ -488,7 +488,9 @@ function ytdlpOptsToArgs(url, opts) {
 }
 
 function runYtDlpBinary(url, opts) {
-  console.log("YT-DLP DIAGNOSTIC — runYtDlpBinary() called for URL:", url);
+  console.log("YT-DLP DIAGNOSTIC — runYtDlpBinary() called");
+  console.log("YT-DLP DIAGNOSTIC — URL:", url);
+  console.log("YT-DLP DIAGNOSTIC — Options:", JSON.stringify(opts));
   return new Promise((resolve, reject) => {
     if (!ytdlpBinaryReady) {
       console.log("YT-DLP DIAGNOSTIC — ytdlpBinaryReady is false, rejecting before execFile runs at all.");
@@ -497,6 +499,8 @@ function runYtDlpBinary(url, opts) {
     }
     const args = ytdlpOptsToArgs(url, opts);
     console.log("YT-DLP COMMAND:", YTDLP_BIN_PATH, args.join(" "));
+    console.log("YT-DLP DIAGNOSTIC — binary path:", YTDLP_BIN_PATH);
+    console.log("YT-DLP DIAGNOSTIC — args array (exact, one entry per argument):", JSON.stringify(args));
     execFile(YTDLP_BIN_PATH, args, { maxBuffer: 1024 * 1024 * 50, timeout: 5 * 60 * 1000 }, (error, stdout, stderr) => {
       if (error) {
         console.log("YT-DLP DIAGNOSTIC — command failed");
@@ -604,8 +608,8 @@ async function runYtDlpWithFallback(url, extraOpts) {
       return await runYtDlpBinary(url, { ...ytdlpBaseOpts(client), ...extraOpts });
     } catch (err) {
       lastErr = err;
-      if (!isBotCheckError(err)) throw err; // a different kind of failure — no point trying other clients
-      console.warn(`[yt-dlp] client "${client}" hit bot-check, trying next client...`);
+      const reason = isBotCheckError(err) ? "bot-check" : "error";
+      console.warn(`[yt-dlp] client "${client}" failed (${reason}: ${extractYtDlpError(err).slice(0, 120)}), trying next client...`);
     }
   }
   throw lastErr;
