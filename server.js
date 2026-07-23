@@ -602,16 +602,23 @@ function ytdlpBaseOpts(playerClient) {
  * way four times over).
  */
 async function runYtDlpWithFallback(url, extraOpts) {
+  console.log("[DIAG] Starting yt-dlp fallback");
   let lastErr;
   for (const client of YTDLP_CLIENT_FALLBACK_ORDER) {
+    console.log("[DIAG] Trying yt-dlp client:", client);
     try {
-      return await runYtDlpBinary(url, { ...ytdlpBaseOpts(client), ...extraOpts });
+      const result = await runYtDlpBinary(url, { ...ytdlpBaseOpts(client), ...extraOpts });
+      console.log("[DIAG] yt-dlp client succeeded:", client);
+      return result;
     } catch (err) {
       lastErr = err;
+      console.log("[DIAG] yt-dlp client failed:", client);
+      console.log("[DIAG] Actual error:", extractYtDlpError(err));
       const reason = isBotCheckError(err) ? "bot-check" : "error";
       console.warn(`[yt-dlp] client "${client}" failed (${reason}: ${extractYtDlpError(err).slice(0, 120)}), trying next client...`);
     }
   }
+  console.log("[DIAG] FINAL YT-DLP ERROR:", extractYtDlpError(lastErr));
   throw lastErr;
 }
 
@@ -965,8 +972,10 @@ async function runClipPipeline(job, source) {
     if (source.kind === "youtube") {
       job.stage = "retrieving_video";
       console.log(`[job ${job.id}] retrieving video from YouTube: ${source.url}`);
+      console.log("[DIAG] Starting YouTube processing");
 
       const meta = await fetchYoutubeMetadata(source.url).catch((err) => {
+        console.log("[DIAG] Final error (metadata fetch), before friendly conversion:", err.message);
         throw new Error(friendlyYoutubeError(err.message, "read that video's info"));
       });
 
@@ -976,6 +985,7 @@ async function runClipPipeline(job, source) {
 
       const outputTemplate = path.join(UPLOAD_DIR, `${job.id}.%(ext)s`);
       await downloadYoutubeVideo(source.url, outputTemplate).catch((err) => {
+        console.log("[DIAG] Final error (download), before friendly conversion:", err.message);
         throw new Error(friendlyYoutubeError(err.message, "download that video"));
       });
 
@@ -1173,6 +1183,7 @@ app.post("/api/clips/upload", upload.single("video"), async (req, res) => {
 app.post("/api/clips/from-url", async (req, res) => {
   try {
     const { url } = req.body;
+    console.log("[DIAG] YouTube request received:", url);
     if (!url || typeof url !== "string" || !YOUTUBE_URL_PATTERN.test(url.trim())) {
       return res.status(400).json({ success: false, error: "That doesn't look like a valid YouTube URL." });
     }
