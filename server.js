@@ -22,6 +22,16 @@
  * - If the binary fails to download at boot (e.g. GitHub unreachable from
  *   Render's network), YouTube ingestion cleanly reports that specific
  *   failure per-request; file upload is entirely unaffected either way.
+ * - NEW (this change): inspectCookiesFile() — a boot-time, safe-metadata-
+ *   only diagnostic for the YTDLP_COOKIES file, added because Render's
+ *   Shell isn't available on the Free tier so there was no other £0 way
+ *   to inspect the file's structure. Reports existence, byte count,
+ *   whether it starts with the Netscape header, whether it contains tab
+ *   characters and TRUE/FALSE tokens (both always present in real
+ *   Netscape cookie files, essentially never in Base64), a simple
+ *   Base64-likelihood flag, and a count of structurally valid cookie
+ *   lines. NEVER reads or logs field index 6 (the cookie value) or any
+ *   cookie name/value pair.
  * - Still Groq-only. yt-dlp is a download tool, not an AI provider.
  */
 
@@ -548,6 +558,67 @@ function isBotCheckError(err) {
 }
 
 /**
+ * ⚠️ TEMPORARY DIAGNOSTIC — added only to determine YTDLP_COOKIES format
+ * without needing Render Shell (unavailable on the Free tier). Safe to
+ * delete this whole function and its one call site once the format
+ * question is resolved — it changes no application behavior, it only logs.
+ *
+ * Reports ONLY structural metadata about the cookie file — never a cookie
+ * name/value pair, never the value at field index 6 of any Netscape cookie
+ * line, never anything from SID/HSID/SSID/SAPISID/__Secure-* fields.
+ *
+ * The three signals (Netscape header present, tab characters present,
+ * TRUE/FALSE tokens present) are each independently strong evidence of a
+ * genuine Netscape cookie file — Base64 text essentially never has tabs or
+ * the literal substrings "TRUE"/"FALSE" repeated, and legitimate exporters
+ * virtually always include the header comment. `looksLikeBase64` is only
+ * set true when content matches the Base64 character set AND has none of
+ * the other two positive signals — three independent checks agreeing, not
+ * a single fragile heuristic.
+ */
+function inspectCookiesFile(cookiesPath) {
+  try {
+    if (!fs.existsSync(cookiesPath)) {
+      console.log("[COOKIE DIAG] File exists: false");
+      return;
+    }
+
+    const stat = fs.statSync(cookiesPath);
+    const content = fs.readFileSync(cookiesPath, "utf8");
+    const trimmed = content.trim();
+
+    const startsWithNetscapeHeader = /^#\s*Netscape HTTP Cookie File/i.test(trimmed);
+    const hasTabs = content.includes("\t");
+    const hasTrueFalseTokens = /\bTRUE\b|\bFALSE\b/.test(content);
+    const looksLikeBase64 =
+      /^[A-Za-z0-9+/=\s]+$/.test(trimmed) && !hasTabs && !hasTrueFalseTokens;
+
+    let validCookieLineCount = 0;
+    for (const rawLine of content.split("\n")) {
+      let line = rawLine.trim();
+      if (!line) continue;
+      if (line.startsWith("#HttpOnly_")) {
+        line = line.slice("#HttpOnly_".length);
+      } else if (line.startsWith("#")) {
+        continue; // real comment line
+      }
+      const fields = line.split("\t");
+      if (fields.length >= 7) validCookieLineCount++; // never reads fields[6], only counts the line
+    }
+
+    console.log("[COOKIE DIAG] File exists: true");
+    console.log("[COOKIE DIAG] Byte count:", stat.size);
+    console.log("[COOKIE DIAG] Starts with Netscape header:", startsWithNetscapeHeader);
+    console.log("[COOKIE DIAG] Contains tab characters:", hasTabs);
+    console.log("[COOKIE DIAG] Contains TRUE/FALSE tokens:", hasTrueFalseTokens);
+    console.log("[COOKIE DIAG] Looks like Base64:", looksLikeBase64);
+    console.log("[COOKIE DIAG] Structurally valid cookie lines:", validCookieLineCount);
+  } catch (err) {
+    console.error("[COOKIE DIAG] Inspection failed:", err.message);
+  }
+}
+
+/**
  * Real fix for YouTube's bot-check: authenticate as a logged-in browser
  * session via cookies, same as every production tool does. Set the
  * YTDLP_COOKIES env var on Render to the full contents of a cookies.txt
@@ -563,6 +634,7 @@ if (process.env.YTDLP_COOKIES && process.env.YTDLP_COOKIES.trim()) {
     fs.writeFileSync(YTDLP_COOKIES_PATH, process.env.YTDLP_COOKIES.trim() + "\n");
     ytdlpCookiesReady = true;
     console.log("✅ YouTube cookies file configured — authenticated downloads enabled.");
+    inspectCookiesFile(YTDLP_COOKIES_PATH);
   } catch (err) {
     console.error("⚠️ Could not write YTDLP_COOKIES to disk:", err.message);
   }
@@ -814,12 +886,6 @@ async function analyzeTranscriptChunk(chunk, chunkIndex) {
   }
 }
 
-/**
- * Runs chunked analysis across the whole transcript, normalizes field names
- * to the app-wide clip shape (now including attention_type — FIX), drops
- * heavily-overlapping lower-score clips, and returns the top 10 ranked by
- * score.
- */
 // How many chunk-analysis calls run at once. Capped rather than unlimited
 // because Groq enforces per-account rate limits — firing all chunks of a
 // long video simultaneously would trade one bottleneck for 429s. 4 is a
@@ -930,14 +996,6 @@ async function analyzeTranscript(segments, job) {
   return generateHooksForClips(ranked);
 }
 
-/**
- * Runs the full pipeline in the background; updates the job record as it
- * goes. `source` is either { kind: 'upload', videoPath } for a local file
- * already on disk (from multer), or { kind: 'youtube', url } — in which
- * case this function downloads the video itself as the first stage. Both
- * paths converge on the same extract → transcribe → analyze pipeline so
- * there's a single analysis implementation to maintain.
- */
 /**
  * Turns yt-dlp's raw stderr into an honest, specific message. YouTube's
  * bot-check ("Sign in to confirm you're not a bot") is the single most
